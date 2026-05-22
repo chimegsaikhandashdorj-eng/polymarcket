@@ -1,0 +1,310 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Polymarket Weather Bot</title>
+<style>
+  *{margin:0;padding:0;box-sizing:border-box}
+  body{font-family:'Segoe UI',system-ui,sans-serif;background:#0f1117;color:#e2e8f0;min-height:100vh}
+  header{background:#1a1d27;border-bottom:1px solid #2d3148;padding:18px 32px;display:flex;align-items:center;gap:14px}
+  header h1{font-size:1.25rem;font-weight:600;letter-spacing:.3px}
+  .badge{font-size:.7rem;padding:3px 10px;border-radius:99px;font-weight:600;letter-spacing:.5px}
+  .badge.paper{background:#1e3a5f;color:#60a5fa}
+  .badge.live{background:#3b1a1a;color:#f87171}
+  .badge.online{background:#14532d;color:#4ade80;animation:pulse 2s infinite}
+  @keyframes pulse{0%,100%{opacity:1}50%{opacity:.6}}
+  main{padding:28px 32px;max-width:1400px;margin:0 auto}
+
+  /* Cards */
+  .cards{display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:16px;margin-bottom:28px}
+  .card{background:#1a1d27;border:1px solid #2d3148;border-radius:12px;padding:20px}
+  .card .label{font-size:.75rem;color:#64748b;text-transform:uppercase;letter-spacing:.8px;margin-bottom:8px}
+  .card .value{font-size:2rem;font-weight:700;line-height:1}
+  .card .sub{font-size:.8rem;color:#64748b;margin-top:6px}
+  .green{color:#4ade80}.red{color:#f87171}.blue{color:#60a5fa}.yellow{color:#fbbf24}
+
+  /* Section */
+  .section{background:#1a1d27;border:1px solid #2d3148;border-radius:12px;margin-bottom:24px;overflow:hidden}
+  .section-header{padding:16px 20px;border-bottom:1px solid #2d3148;display:flex;align-items:center;justify-content:space-between}
+  .section-header h2{font-size:.95rem;font-weight:600;color:#94a3b8}
+  .section-header .count{font-size:.75rem;background:#2d3148;padding:2px 8px;border-radius:99px;color:#64748b}
+
+  /* Table */
+  table{width:100%;border-collapse:collapse;font-size:.82rem}
+  th{padding:10px 16px;text-align:left;color:#475569;font-weight:500;font-size:.75rem;text-transform:uppercase;letter-spacing:.5px;border-bottom:1px solid #2d3148}
+  td{padding:11px 16px;border-bottom:1px solid #1e2235;vertical-align:middle}
+  tr:last-child td{border-bottom:none}
+  tr:hover td{background:#1e2235}
+  .pill{display:inline-block;padding:2px 9px;border-radius:99px;font-size:.72rem;font-weight:600}
+  .pill.yes{background:#14532d;color:#4ade80}
+  .pill.no{background:#431a1a;color:#f87171}
+  .pill.win{background:#14532d;color:#4ade80}
+  .pill.loss{background:#431a1a;color:#f87171}
+  .pill.open{background:#1e3a5f;color:#60a5fa}
+  .pill.paper{background:#312e1a;color:#fbbf24}
+  .pill.live{background:#3b1a1a;color:#f87171}
+  .mono{font-family:'Consolas',monospace;font-size:.8rem}
+
+  /* Chart */
+  .chart-wrap{padding:20px;height:200px;position:relative}
+  canvas{width:100%!important;height:100%!important}
+
+  /* Weather grid */
+  .weather-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(220px,1fr));gap:12px;padding:16px}
+  .weather-card{background:#1e2235;border-radius:8px;padding:14px}
+  .weather-card .city{font-size:.8rem;color:#94a3b8;margin-bottom:10px;font-weight:600;text-transform:uppercase;letter-spacing:.5px}
+  .weather-row{display:flex;justify-content:space-between;font-size:.82rem;margin-bottom:4px}
+  .weather-row .key{color:#64748b}
+  .conf-bar{height:4px;background:#2d3148;border-radius:99px;margin-top:8px;overflow:hidden}
+  .conf-fill{height:100%;border-radius:99px;background:linear-gradient(90deg,#f87171,#4ade80)}
+
+  /* Empty */
+  .empty{padding:40px;text-align:center;color:#475569;font-size:.875rem}
+
+  /* Refresh */
+  .refresh{font-size:.75rem;color:#475569}
+  #last-update{font-size:.72rem;color:#475569;margin-left:auto}
+</style>
+</head>
+<body>
+
+<header>
+  <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="#60a5fa" stroke-width="2"><path d="M12 2v2M12 20v2M4.93 4.93l1.41 1.41M17.66 17.66l1.41 1.41M2 12h2M20 12h2M4.93 19.07l1.41-1.41M17.66 6.34l1.41-1.41"/><circle cx="12" cy="12" r="5" fill="#1e3a5f"/></svg>
+  <h1>Polymarket Weather Bot</h1>
+  <span class="badge paper">PAPER MODE</span>
+  <span class="badge online" id="status-badge">ONLINE</span>
+  <span id="last-update"></span>
+</header>
+
+<main>
+
+  <!-- Summary cards -->
+  <div class="cards" id="cards">
+    <div class="card"><div class="label">Total Trades</div><div class="value blue" id="total-trades">—</div><div class="sub">all time</div></div>
+    <div class="card"><div class="label">Open Positions</div><div class="value yellow" id="open-pos">—</div><div class="sub">active now</div></div>
+    <div class="card"><div class="label">Win Rate</div><div class="value" id="win-rate">—</div><div class="sub" id="wl-sub">—</div></div>
+    <div class="card"><div class="label">Total PnL</div><div class="value" id="total-pnl">—</div><div class="sub">USDC</div></div>
+    <div class="card"><div class="label">Today</div><div class="value blue" id="today-trades">—</div><div class="sub">trades today</div></div>
+  </div>
+
+  <!-- PnL chart -->
+  <div class="section">
+    <div class="section-header"><h2>Cumulative PnL</h2><span class="refresh">auto-refreshes every 30s</span></div>
+    <div class="chart-wrap"><canvas id="pnl-chart"></canvas></div>
+  </div>
+
+  <!-- Open positions -->
+  <div class="section">
+    <div class="section-header"><h2>Open Positions</h2><span class="count" id="open-count">0</span></div>
+    <div id="open-table-wrap">
+      <div class="empty">No open positions</div>
+    </div>
+  </div>
+
+  <!-- Weather cache -->
+  <div class="section">
+    <div class="section-header"><h2>Latest Weather Forecasts</h2></div>
+    <div class="weather-grid" id="weather-grid">
+      <div class="empty">No data yet — run a scan first</div>
+    </div>
+  </div>
+
+  <!-- Recent trades -->
+  <div class="section">
+    <div class="section-header"><h2>Recent Trades</h2><span class="count" id="trades-count">0</span></div>
+    <div id="trades-table-wrap">
+      <div class="empty">No trades yet</div>
+    </div>
+  </div>
+
+</main>
+
+<script>
+// ── Helpers ────────────────────────────────────────────────────────────────────
+const $ = id => document.getElementById(id);
+const fmt = n => n === null || n === undefined ? '—' : n;
+const fmtPnl = n => {
+  if (n === null || n === undefined) return '—';
+  const s = (n >= 0 ? '+' : '') + n.toFixed(2);
+  return `<span class="${n >= 0 ? 'green' : 'red'}">${s}</span>`;
+};
+const fmtProb = n => n === null ? '—' : (n * 100).toFixed(0) + '%';
+const fmtConf = n => n === null ? '—' : (n * 100).toFixed(0) + '%';
+const truncate = (s, n) => s && s.length > n ? s.slice(0, n) + '…' : (s || '—');
+const timeAgo = ts => {
+  const diff = Math.floor((Date.now() - new Date(ts + 'Z').getTime()) / 1000);
+  if (diff < 60) return diff + 's ago';
+  if (diff < 3600) return Math.floor(diff/60) + 'm ago';
+  return Math.floor(diff/3600) + 'h ago';
+};
+
+// ── Summary ────────────────────────────────────────────────────────────────────
+async function loadSummary() {
+  const d = await fetch('/api/summary').then(r => r.json()).catch(() => null);
+  if (!d) return;
+  $('total-trades').textContent = d.total_trades;
+  $('open-pos').textContent = d.open_positions;
+  const wr = d.win_rate;
+  $('win-rate').innerHTML = `<span class="${wr >= 55 ? 'green' : wr >= 45 ? 'yellow' : 'red'}">${wr}%</span>`;
+  $('wl-sub').textContent = `${d.wins}W / ${d.losses}L`;
+  $('total-pnl').innerHTML = fmtPnl(d.total_pnl);
+  $('today-trades').textContent = d.today_trades;
+}
+
+// ── PnL chart (pure canvas, no library) ───────────────────────────────────────
+async function loadChart() {
+  const data = await fetch('/api/pnl_chart').then(r => r.json()).catch(() => []);
+  const canvas = $('pnl-chart');
+  const ctx = canvas.getContext('2d');
+  canvas.width = canvas.offsetWidth * window.devicePixelRatio;
+  canvas.height = canvas.offsetHeight * window.devicePixelRatio;
+  ctx.scale(window.devicePixelRatio, window.devicePixelRatio);
+  const W = canvas.offsetWidth, H = canvas.offsetHeight;
+  ctx.clearRect(0, 0, W, H);
+
+  if (!data.length) {
+    ctx.fillStyle = '#475569';
+    ctx.font = '13px Segoe UI';
+    ctx.textAlign = 'center';
+    ctx.fillText('No trade history yet', W/2, H/2);
+    return;
+  }
+
+  const vals = data.map(d => d.pnl);
+  const min = Math.min(0, ...vals), max = Math.max(0, ...vals);
+  const range = max - min || 1;
+  const pad = {l:44, r:16, t:12, b:28};
+  const chartW = W - pad.l - pad.r;
+  const chartH = H - pad.t - pad.b;
+  const toX = i => pad.l + (i / (data.length - 1 || 1)) * chartW;
+  const toY = v => pad.t + (1 - (v - min) / range) * chartH;
+  const zeroY = toY(0);
+
+  // Grid lines
+  ctx.strokeStyle = '#2d3148'; ctx.lineWidth = 1;
+  [0, 0.25, 0.5, 0.75, 1].forEach(f => {
+    const y = pad.t + f * chartH;
+    ctx.beginPath(); ctx.moveTo(pad.l, y); ctx.lineTo(W - pad.r, y); ctx.stroke();
+    const v = max - f * range;
+    ctx.fillStyle = '#475569'; ctx.font = '10px Consolas'; ctx.textAlign = 'right';
+    ctx.fillText((v >= 0 ? '+' : '') + v.toFixed(1), pad.l - 4, y + 3);
+  });
+
+  // Gradient fill
+  const lastY = toY(vals[vals.length - 1]);
+  const grad = ctx.createLinearGradient(0, pad.t, 0, H - pad.b);
+  const positive = vals[vals.length - 1] >= 0;
+  grad.addColorStop(0, positive ? 'rgba(74,222,128,.35)' : 'rgba(248,113,113,.35)');
+  grad.addColorStop(1, 'rgba(0,0,0,0)');
+  ctx.beginPath();
+  ctx.moveTo(toX(0), zeroY);
+  data.forEach((d, i) => ctx.lineTo(toX(i), toY(d.pnl)));
+  ctx.lineTo(toX(data.length - 1), zeroY);
+  ctx.closePath(); ctx.fillStyle = grad; ctx.fill();
+
+  // Line
+  ctx.beginPath();
+  ctx.strokeStyle = positive ? '#4ade80' : '#f87171';
+  ctx.lineWidth = 2; ctx.lineJoin = 'round';
+  data.forEach((d, i) => i === 0 ? ctx.moveTo(toX(i), toY(d.pnl)) : ctx.lineTo(toX(i), toY(d.pnl)));
+  ctx.stroke();
+
+  // Zero line
+  ctx.beginPath(); ctx.strokeStyle = '#475569'; ctx.lineWidth = 1; ctx.setLineDash([4,4]);
+  ctx.moveTo(pad.l, zeroY); ctx.lineTo(W - pad.r, zeroY); ctx.stroke();
+  ctx.setLineDash([]);
+
+  // X labels
+  ctx.fillStyle = '#475569'; ctx.font = '10px Segoe UI'; ctx.textAlign = 'center';
+  const step = Math.ceil(data.length / 6);
+  data.forEach((d, i) => {
+    if (i % step === 0 || i === data.length - 1)
+      ctx.fillText(d.day.slice(5), toX(i), H - pad.b + 14);
+  });
+}
+
+// ── Open positions ─────────────────────────────────────────────────────────────
+async function loadOpen() {
+  const data = await fetch('/api/open').then(r => r.json()).catch(() => []);
+  $('open-count').textContent = data.length;
+  const wrap = $('open-table-wrap');
+  if (!data.length) { wrap.innerHTML = '<div class="empty">No open positions</div>'; return; }
+  wrap.innerHTML = `<table>
+    <thead><tr><th>Market</th><th>Side</th><th>Size</th><th>Entry</th><th>Our P</th><th>EV</th><th>Mode</th><th>Opened</th></tr></thead>
+    <tbody>${data.map(t => `<tr>
+      <td title="${t.market_title}">${truncate(t.market_title, 52)}</td>
+      <td><span class="pill ${t.side.toLowerCase()}">${t.side}</span></td>
+      <td class="mono">$${t.size_usdc.toFixed(2)}</td>
+      <td class="mono">${(t.entry_price*100).toFixed(1)}¢</td>
+      <td class="mono">${fmtProb(t.our_prob)}</td>
+      <td class="mono" style="color:${t.ev>=0?'#4ade80':'#f87171'}">${t.ev>=0?'+':''}${(t.ev*100).toFixed(1)}%</td>
+      <td><span class="pill ${t.paper?'paper':'live'}">${t.paper?'PAPER':'LIVE'}</span></td>
+      <td>${timeAgo(t.timestamp)}</td>
+    </tr>`).join('')}</tbody>
+  </table>`;
+}
+
+// ── Weather ────────────────────────────────────────────────────────────────────
+async function loadWeather() {
+  const data = await fetch('/api/weather').then(r => r.json()).catch(() => []);
+  const grid = $('weather-grid');
+  if (!data.length) { grid.innerHTML = '<div class="empty">No data yet — run a scan first</div>'; return; }
+  // Deduplicate by lat+lon, keep freshest
+  const seen = {};
+  data.forEach(w => {
+    const key = `${w.lat},${w.lon}`;
+    if (!seen[key]) seen[key] = w;
+  });
+  grid.innerHTML = Object.values(seen).map(w => {
+    const conf = w.confidence || 0;
+    const confColor = conf >= 0.8 ? '#4ade80' : conf >= 0.5 ? '#fbbf24' : '#f87171';
+    return `<div class="weather-card">
+      <div class="city">${w.lat.toFixed(2)}, ${w.lon.toFixed(2)}</div>
+      <div class="weather-row"><span class="key">Precip</span><span>${fmtProb(w.precip_prob)}</span></div>
+      <div class="weather-row"><span class="key">Temp</span><span>${w.temp_c !== null ? w.temp_c.toFixed(1)+'°C' : '—'}</span></div>
+      <div class="weather-row"><span class="key">Humidity</span><span>${w.humidity !== null ? w.humidity.toFixed(0)+'%' : '—'}</span></div>
+      <div class="weather-row"><span class="key">Wind</span><span>${w.wind_kph !== null ? w.wind_kph.toFixed(1)+' kph' : '—'}</span></div>
+      <div class="weather-row"><span class="key">Sources</span><span style="font-size:.7rem;color:#94a3b8">${(w.sources||'').split(',').length}</span></div>
+      <div class="conf-bar"><div class="conf-fill" style="width:${(conf*100).toFixed(0)}%;background:${confColor}"></div></div>
+      <div style="font-size:.7rem;color:${confColor};margin-top:4px">Conf: ${fmtConf(conf)}</div>
+      <div style="font-size:.68rem;color:#475569;margin-top:4px">${timeAgo(w.fetched_at)}</div>
+    </div>`;
+  }).join('');
+}
+
+// ── Trades ─────────────────────────────────────────────────────────────────────
+async function loadTrades() {
+  const data = await fetch('/api/trades').then(r => r.json()).catch(() => []);
+  $('trades-count').textContent = data.length;
+  const wrap = $('trades-table-wrap');
+  if (!data.length) { wrap.innerHTML = '<div class="empty">No trades yet</div>'; return; }
+  wrap.innerHTML = `<table>
+    <thead><tr><th>Market</th><th>Side</th><th>Size</th><th>Entry</th><th>Our P</th><th>EV</th><th>Outcome</th><th>PnL</th><th>Mode</th><th>Time</th></tr></thead>
+    <tbody>${data.map(t => `<tr>
+      <td title="${t.market_title}">${truncate(t.market_title, 45)}</td>
+      <td><span class="pill ${t.side.toLowerCase()}">${t.side}</span></td>
+      <td class="mono">$${t.size_usdc.toFixed(2)}</td>
+      <td class="mono">${(t.entry_price*100).toFixed(1)}¢</td>
+      <td class="mono">${fmtProb(t.our_prob)}</td>
+      <td class="mono" style="color:${t.ev>=0?'#4ade80':'#f87171'}">${t.ev>=0?'+':''}${(t.ev*100).toFixed(1)}%</td>
+      <td><span class="pill ${(t.outcome||'open').toLowerCase()}">${t.outcome||'OPEN'}</span></td>
+      <td class="mono">${fmtPnl(t.pnl_usdc)}</td>
+      <td><span class="pill ${t.paper?'paper':'live'}">${t.paper?'PAPER':'LIVE'}</span></td>
+      <td>${timeAgo(t.timestamp)}</td>
+    </tr>`).join('')}</tbody>
+  </table>`;
+}
+
+// ── Refresh all ────────────────────────────────────────────────────────────────
+async function refresh() {
+  await Promise.all([loadSummary(), loadChart(), loadOpen(), loadWeather(), loadTrades()]);
+  $('last-update').textContent = 'Updated ' + new Date().toLocaleTimeString();
+}
+
+refresh();
+setInterval(refresh, 30000);
+window.addEventListener('resize', loadChart);
+</script>
+</body>
+</html>

@@ -1,0 +1,258 @@
+# -- Trading parameters ----------------------------------------------
+trading:
+  paper_mode: true           # Set false only when ready for real money
+  ev_threshold: 0.08          # 8% minimum edge (was 5%) -- only very strong signals
+  kelly_fraction: 0.15       # 15% Kelly (was 25%) -- smaller positions = less risk
+  max_position_usdc: 25      # $25 cap per trade (was $50) -- halved max exposure
+  max_open_positions: 3      # Max 3 positions (was 5) -- less capital at risk
+  daily_loss_limit_usdc: 75  # $75/day limit (was $200) -- tight daily stop
+  min_confidence: 0.65       # 65% minimum (was 50%) -- only high-confidence trades
+  min_edge_score: 0.04       # Doubled (was 0.02) -- stricter quality filter
+  poll_interval_seconds: 900 # How often the bot scans markets (15 min)
+  loss_streak_pause: 3       # Pause after 3 consecutive losses
+  edge_confirmations: 2      # Require 2 consecutive scans before trading
+
+# -- Market filters ----------------------------------------------------
+markets:
+  min_liquidity_usdc: 10000          # [up] $10K minimum (was $5K) -- only liquid markets
+  backtest_min_liquidity_usdc: 500   # Lower bar for backtesting (more historical data)
+  max_hours_to_expiry: 168   # Only trade markets expiring within 7 days
+  min_hours_to_expiry: 2     # Avoid markets expiring too soon (latency risk)
+  weather_keywords:
+    - rain
+    - rainfall
+    - precipitation
+    - snow
+    - snowfall
+    - temperature
+    - degrees
+    - fahrenheit
+    - celsius
+    - storm
+    - hurricane
+    - tornado
+    - wind
+    - blizzard
+    - freeze
+    - frost
+    - flood
+    - drought
+    - heatwave
+    - heat wave
+    - highest temperature
+    - daily high
+    - daily max
+    - weather
+    - thunderstorm
+    - ice storm
+    - cold front
+    - warm front
+    - heat index
+    - wind chill
+    - dewpoint
+    - humidity
+
+# -- Weather ensemble weights (must sum to 1.0) ------------------------
+weather:
+  cache_ttl_seconds: 3600    # Re-use cached forecast for 1 hour
+  sources:
+    tomorrow_io:
+      weight: 0.30
+      enabled: true
+    open_meteo:
+      weight: 0.20
+      enabled: true
+    nws:
+      weight: 0.15
+      enabled: true          # US locations only; auto-disabled for non-US
+    weatherapi:
+      weight: 0.15
+      enabled: true          # Needs WEATHERAPI_KEY in .env (free 1M/month)
+    pirate_weather:
+      weight: 0.10
+      enabled: true          # Needs PIRATE_WEATHER_KEY in .env (free 10K/month)
+    met_norway:
+      weight: 0.10
+      enabled: true          # Free, no key needed -- ECMWF model
+
+# -- Cities to monitor (add as many as you like) ----------------------
+cities:
+  # -- Major US cities (most Polymarket weather markets) ---------------
+  - name: "New York"
+    lat: 40.7128
+    lon: -74.0060
+    country: "US"
+  - name: "Los Angeles"
+    lat: 34.0522
+    lon: -118.2437
+    country: "US"
+  - name: "Chicago"
+    lat: 41.8781
+    lon: -87.6298
+    country: "US"
+  - name: "Miami"
+    lat: 25.7617
+    lon: -80.1918
+    country: "US"
+  - name: "Houston"
+    lat: 29.7604
+    lon: -95.3698
+    country: "US"
+  - name: "Phoenix"
+    lat: 33.4484
+    lon: -112.0740
+    country: "US"
+  - name: "Philadelphia"
+    lat: 39.9526
+    lon: -75.1652
+    country: "US"
+  - name: "San Antonio"
+    lat: 29.4241
+    lon: -98.4936
+    country: "US"
+  - name: "San Diego"
+    lat: 32.7157
+    lon: -117.1611
+    country: "US"
+  - name: "Dallas"
+    lat: 32.7767
+    lon: -96.7970
+    country: "US"
+  - name: "Austin"
+    lat: 30.2672
+    lon: -97.7431
+    country: "US"
+  - name: "San Francisco"
+    lat: 37.7749
+    lon: -122.4194
+    country: "US"
+  - name: "Seattle"
+    lat: 47.6062
+    lon: -122.3321
+    country: "US"
+  - name: "Denver"
+    lat: 39.7392
+    lon: -104.9903
+    country: "US"
+  - name: "Washington"
+    lat: 38.9072
+    lon: -77.0369
+    country: "US"
+  - name: "Boston"
+    lat: 42.3601
+    lon: -71.0589
+    country: "US"
+  - name: "Atlanta"
+    lat: 33.7490
+    lon: -84.3880
+    country: "US"
+  - name: "Las Vegas"
+    lat: 36.1699
+    lon: -115.1398
+    country: "US"
+  - name: "Portland"
+    lat: 45.5152
+    lon: -122.6784
+    country: "US"
+  - name: "Minneapolis"
+    lat: 44.9778
+    lon: -93.2650
+    country: "US"
+  - name: "Detroit"
+    lat: 42.3314
+    lon: -83.0458
+    country: "US"
+  - name: "Nashville"
+    lat: 36.1627
+    lon: -86.7816
+    country: "US"
+  - name: "Charlotte"
+    lat: 35.2271
+    lon: -80.8431
+    country: "US"
+  - name: "Orlando"
+    lat: 28.5383
+    lon: -81.3792
+    country: "US"
+  # -- International ---------------------------------------------------
+  - name: "London"
+    lat: 51.5074
+    lon: -0.1278
+    country: "GB"
+  - name: "Tokyo"
+    lat: 35.6762
+    lon: 139.6503
+    country: "JP"
+  - name: "Sydney"
+    lat: -33.8688
+    lon: 151.2093
+    country: "AU"
+  - name: "Paris"
+    lat: 48.8566
+    lon: 2.3522
+    country: "FR"
+  - name: "Toronto"
+    lat: 43.6532
+    lon: -79.3832
+    country: "CA"
+  - name: "Dubai"
+    lat: 25.2048
+    lon: 55.2708
+    country: "AE"
+  - name: "Mumbai"
+    lat: 19.0760
+    lon: 72.8777
+    country: "IN"
+
+# -- Risk management ---------------------------------------------------
+risk:
+  max_kelly_fraction: 0.15        # [dn] 15% Kelly ceiling (was 25%) -- conservative sizing
+  correlation_block: true         # Block duplicate trades on same city+date+metric
+  stale_forecast_hours: 2         # [dn] 2h freshness (was 3h) -- reject stale data faster
+  max_city_exposure_pct: 0.20     # [dn] 20% per city (was 30%) -- more diversified
+  max_portfolio_exposure_pct: 0.40 # [dn] 40% total (was 60%) -- always keep 60% cash
+  drawdown_halt_pct: 0.20         # [dn] 20% drawdown halt (was 40%) -- stop earlier
+
+# -- Multi-timeframe loss limits ----------------------------------------
+loss_limits:
+  daily_usdc: 75                  # [dn] $75/day (was $200) -- tight daily cap
+  weekly_usdc: 200                # [dn] $200/week (was $500) -- weekly protection
+  monthly_usdc: 400               # [dn] $400/month (was $1000) -- hard monthly stop
+
+# -- Adversarial market detection ---------------------------------------
+adversarial:
+  enabled: true
+  price_jump_threshold: 0.10      # Flag if price moves >10pp between consecutive scans
+  volume_spike_multiplier: 5.0    # Flag if volume delta > 5x rolling average delta
+  spread_collapse_high: 0.05      # Spread was wider than this...
+  spread_collapse_low: 0.01       # ...and collapsed below this in 1 scan
+  cooldown_minutes: 30            # Block new entries for this many minutes after flag
+
+# -- Opportunity cost (time value of capital locked in positions) --------
+opportunity_cost:
+  enabled: true                   # [up] ENABLED -- penalizes long lock-up trades
+  apy: 0.08                       # [up] 8% APY baseline -- makes bot pickier about time
+
+# -- Crypto trading settings --------------------------------------------
+crypto:
+  enabled: true
+  paper_only_until: "2026-06-05"   # Force paper mode until this date (14 day test)
+  assets:                          # Which coins to trade
+    - bitcoin
+    - ethereum
+    - solana
+  max_position_usdc: 5             # $5 max per crypto trade (very cautious)
+  daily_loss_limit_usdc: 15        # $15/day crypto loss limit
+  min_ev_threshold: 0.12           # 12% minimum edge for crypto (higher than weather)
+  min_confidence: 0.75             # 75% confidence minimum
+  edge_confirmations: 3            # Require 3 scans (stricter than weather's 2)
+  min_threshold_usd: 100           # Don't trade markets with threshold < $100
+  max_volatility_daily: 0.12       # Skip if daily vol > 12% (too unpredictable)
+  min_hours_to_expiry: 12          # Don't trade crypto markets expiring < 12h
+  momentum_weight: 0.3             # How much to trust trend vs. pure stats
+  max_spread: 0.04                 # 4% max spread for crypto (tighter than weather)
+
+# -- Square-root market impact slippage model ---------------------------
+slippage:
+  base: 0.005                     # Base slippage 0.5%
+  max_impact: 0.02                # Skip trade if sqrt impact would exceed 2%

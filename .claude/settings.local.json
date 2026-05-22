@@ -1,0 +1,39 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(bash --version)",
+      "Bash(wsl --status)",
+      "Bash(curl -fsSL https://hermes-agent.nousresearch.com/install.sh)",
+      "Bash(curl -fsSL https://raw.githubusercontent.com/NousResearch/hermes-agent/main/scripts/install.ps1)",
+      "Bash(powershell.exe -ExecutionPolicy Bypass -Command ' *)",
+      "Bash(echo \"Exit: $?\")",
+      "Bash(powershell.exe -ExecutionPolicy Bypass -Command \"Invoke-WebRequest -Uri 'https://raw.githubusercontent.com/NousResearch/hermes-agent/main/scripts/install.ps1' -UseBasicParsing -OutFile 'C:/Windows/Temp/hermes_install.ps1'; Write-Output 'Downloaded'\")",
+      "Bash(powershell.exe -ExecutionPolicy Bypass -File \"C:/Windows/Temp/hermes_install.ps1\")",
+      "Bash(python -m pytest tests/ -v --tb=short)",
+      "Bash(python scripts/validate_credentials.py)",
+      "mcp__Claude_in_Chrome__tabs_context_mcp",
+      "Bash(pip install *)",
+      "mcp__Claude_in_Chrome__computer",
+      "mcp__Claude_in_Chrome__navigate",
+      "Bash(python -m pytest tests/ -x -q)",
+      "Bash(python main.py scan)",
+      "Bash(python -m pytest tests/ -x -q --ignore=tests/test_sources.py)",
+      "Bash(python -m py_compile src/learner.py)",
+      "Bash(python -m py_compile src/strategy.py)",
+      "Bash(python -m py_compile src/executor.py)",
+      "Bash(python -m py_compile src/risk_manager.py)",
+      "Bash(python -m py_compile src/market_scanner.py)",
+      "Bash(python -m pytest tests/ -v --tb=long)",
+      "Bash(python -m pytest tests/ --tb=long)",
+      "Bash(python tests/test_sources.py)",
+      "Bash(python -m py_compile src/crypto_fetcher.py)",
+      "Bash(python -m py_compile main.py)",
+      "Bash(python -m pytest tests/test_crypto_signals.py -v)",
+      "Bash(python -m pytest --tb=short)",
+      "Bash(python -m pytest tests/ --tb=short)",
+      "Bash(git init *)",
+      "Bash(git branch *)",
+      "Bash(git add *)"
+    ]
+  }
+}
