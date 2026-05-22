@@ -35,6 +35,11 @@ _MAX_RETRIES = 3
 
 # ── Helpers ────────────────────────────────────────────────────────────────────
 
+# Canonical UTC-safe ISO parser is exposed at the package root; reuse it here
+# instead of redefining to keep timezone normalization consistent across modules.
+from . import parse_utc_isoformat  # noqa: E402
+
+
 def _safe_get(url: str, params: dict = None, headers: dict = None) -> Optional[dict]:
     """HTTP GET with exponential-backoff retry. Non-retryable 4xx errors fail immediately."""
     for attempt in range(_MAX_RETRIES):
@@ -109,7 +114,7 @@ def _fetch_tomorrow(lat: float, lon: float, target_dt: datetime) -> Optional[dic
         best = min(
             hourly,
             key=lambda h: abs(
-                datetime.fromisoformat(h["time"].replace("Z", "+00:00")).timestamp()
+                parse_utc_isoformat(h["time"]).timestamp()
                 - target_ts
             ),
         )
@@ -195,7 +200,7 @@ def _fetch_nws(lat: float, lon: float, target_dt: datetime) -> Optional[dict]:
         target_ts = target_dt.replace(tzinfo=timezone.utc).timestamp()
         best = min(
             periods,
-            key=lambda p: abs(datetime.fromisoformat(p["startTime"]).timestamp() - target_ts),
+            key=lambda p: abs(parse_utc_isoformat(p["startTime"]).timestamp() - target_ts),
         )
         prob_val = best.get("probabilityOfPrecipitation", {}).get("value") or 0
         precip_prob = float(prob_val) / 100.0
@@ -351,7 +356,7 @@ def _fetch_met_norway(lat: float, lon: float, target_dt: datetime) -> Optional[d
         best = min(
             timeseries,
             key=lambda t: abs(
-                datetime.fromisoformat(t["time"].replace("Z", "+00:00")).timestamp()
+                parse_utc_isoformat(t["time"]).timestamp()
                 - target_ts
             ),
         )
@@ -454,7 +459,51 @@ def _aggregate(forecasts: List[dict], weights_override: Optional[dict] = None) -
     if conf_components:
         base_conf = sum(conf_components) / len(conf_components)
         source_bonus = min(0.10, (len(forecasts) - 2) * 0.02) if len(forecasts) >= 2 else 0
-        confidence = min(1.0, base_conf + source_bonus)
+        
+        # Ensemble Forecast Variance Filter
+        variance_adj = 0.0
+        
+        # 1. Precipitation Probability variance adjustment
+        if len(precip_probs) >= 2:
+            precip_var = statistics.variance(precip_probs)
+            if precip_var > 0.04:  # high disagreement (std > 0.2)
+                variance_adj -= 0.05 * (precip_var / 0.25)
+            elif precip_var < 0.01:  # strong consensus (std < 0.1)
+                variance_adj += 0.03 * (1.0 - precip_var / 0.01)
+                
+        # 2. Temperature variance adjustment
+        if len(temp_vals) >= 2:
+            temp_var = statistics.variance(temp_vals)
+            if temp_var > 4.0:  # high disagreement (std > 2C)
+                variance_adj -= 0.05 * min(2.0, temp_var / 4.0)
+            elif temp_var < 1.0:  # strong consensus (std < 1C)
+                variance_adj += 0.03 * (1.0 - temp_var / 1.0)
+                
+        # 3. Wind speed variance adjustment
+        if len(wind_vals) >= 2:
+            wind_var = statistics.variance(wind_vals)
+            if wind_var > 25.0:  # high disagreement (std > 5 kph)
+                variance_adj -= 0.05 * min(2.0, wind_var / 25.0)
+            elif wind_var < 4.0:  # strong consensus (std < 2 kph)
+                variance_adj += 0.03 * (1.0 - wind_var / 4.0)
+
+        # 4. Severe/Extreme Weather Detection
+        avg_wind = wavg("wind_kph") or 0.0
+        avg_temp = wavg("temp_c") or 15.0
+        
+        extreme_weather_penalty = 0.0
+        if avg_wind > 35.0:
+            log.info("Extreme weather detected: High wind storm (>35 kph) at %.1f kph. Adjusting confidence.", avg_wind)
+            extreme_weather_penalty += 0.10
+        if avg_temp > 35.0:
+            log.info("Extreme weather detected: Extreme heat (>35°C) at %.1f°C. Adjusting confidence.", avg_temp)
+            extreme_weather_penalty += 0.08
+        elif avg_temp < -10.0:
+            log.info("Extreme weather detected: Extreme cold (<-10°C) at %.1f°C. Adjusting confidence.", avg_temp)
+            extreme_weather_penalty += 0.08
+
+        confidence = base_conf + source_bonus + variance_adj - extreme_weather_penalty
+        confidence = max(0.20, min(1.0, confidence))
     else:
         confidence = 0.30
 

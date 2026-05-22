@@ -33,7 +33,12 @@
       "Bash(python -m pytest tests/ --tb=short)",
       "Bash(git init *)",
       "Bash(git branch *)",
-      "Bash(git add *)"
+      "Bash(git add *)",
+      "Bash(git config *)",
+      "Bash(where gh *)",
+      "PowerShell(winget install --id GitHub.cli --accept-package-agreements --accept-source-agreements 2>&1)",
+      "PowerShell($env:Path = [System.Environment]::GetEnvironmentVariable\\(\"Path\",\"Machine\"\\) + \";\" + [System.Environment]::GetEnvironmentVariable\\(\"Path\",\"User\"\\); gh --version)",
+      "Bash(python -m pytest tests/test_crypto_signals.py -v --tb=short)"
     ]
   }
 }

@@ -9,6 +9,7 @@ Usage:
 """
 
 import logging
+import threading
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timezone
@@ -18,6 +19,8 @@ from typing import Dict, List
 import click
 import yaml
 from dotenv import load_dotenv
+
+from src import parse_utc_isoformat  # canonical UTC-safe ISO parser
 
 load_dotenv()
 
@@ -33,6 +36,9 @@ def load_config() -> dict:
 
 
 # ── Parallel weather fetching ──────────────────────────────────────────────────
+
+_weather_lock = threading.Lock()
+_last_scan_max_ev = [0.0]  # mutable container to track max EV for dynamic interval
 
 def _fetch_all_city_weather(weather_fetcher, cities: List[dict], target_dt: datetime) -> Dict[str, dict]:
     """
@@ -50,7 +56,8 @@ def _fetch_all_city_weather(weather_fetcher, cities: List[dict], target_dt: date
         for future in as_completed(futures):
             try:
                 city_name, weather = future.result()
-                city_weather[city_name.lower()] = {**weather, "fetched_at": time.time()}
+                with _weather_lock:
+                    city_weather[city_name.lower()] = {**weather, "fetched_at": time.time()}
                 log.info(
                     "Weather %s: precip=%.0f%%  temp=%.1f°C  conf=%.2f  [%s]",
                     city_name,
@@ -126,8 +133,7 @@ def _run_scan(config: dict, executor=None) -> list:
             paper_until = crypto_cfg.get("paper_only_until", "")
             if paper_until:
                 try:
-                    from datetime import date as _date
-                    if _date.fromisoformat(paper_until) > datetime.now(timezone.utc).date():
+                    if parse_utc_isoformat(paper_until).date() > datetime.now(timezone.utc).date():
                         if not config["trading"].get("paper_mode", True):
                             log.debug("Crypto forced paper mode until %s", paper_until)
                             continue  # skip crypto in live mode during test period
@@ -154,7 +160,7 @@ def _run_scan(config: dict, executor=None) -> list:
             expiry_str = market.get("expiry_dt") or market.get("target_dt")
             if expiry_str:
                 try:
-                    exp_dt = datetime.fromisoformat(expiry_str.replace("Z", "+00:00"))
+                    exp_dt = parse_utc_isoformat(expiry_str)
                     hours_to_expiry = max(0.0, (exp_dt - target_dt).total_seconds() / 3600)
                 except (ValueError, TypeError):
                     pass
@@ -179,11 +185,42 @@ def _run_scan(config: dict, executor=None) -> list:
                 continue
 
             # Spread check: skip if bid-ask spread too wide
-            spread = market.get("spread", 0)
+            spread = market.get("spread")
+            if spread is None or spread == 0:
+                try:
+                    min_bid = float(market.get("min_bid") or market.get("best_bid") or 0)
+                    max_ask = float(market.get("max_ask") or market.get("best_ask") or 0)
+                    if min_bid > 0 and max_ask > 0:
+                        mid = (min_bid + max_ask) / 2.0
+                        spread = (max_ask - min_bid) / mid if mid > 0 else 0.0
+                    else:
+                        spread = 0.0
+                except (ValueError, TypeError):
+                    spread = 0.0
             max_spread = crypto_cfg.get("max_spread", 0.04)
             if spread > max_spread:
                 log.debug("Crypto %s spread %.2f%% > max %.2f%% -- skipping",
                           crypto_asset, spread * 100, max_spread * 100)
+                continue
+
+            # Option Pricing Volatility Safeguard: Verify underpriced YES shares
+            from src.crypto_signals import confirm_crypto_option_edge
+            yes_mkt_price = market.get("best_ask") or market.get("yes_price") or 0.5
+            option_check = confirm_crypto_option_edge(
+                current_price=crypto_data.get("current_price", 0.0),
+                threshold=threshold,
+                direction=direction,
+                hours_to_expiry=hours_to_expiry,
+                daily_volatility=daily_vol,
+                yes_market_price=yes_mkt_price,
+                min_edge_threshold=crypto_cfg.get("min_ev_threshold", 0.12),
+            )
+            if not option_check["has_underpriced_edge"]:
+                log.info(
+                    "Crypto %s Option Model Safeguard: No underpriced option edge confirmed (Theo=%.3f, Mkt=%.3f, Edge=%.3f, IV=%.1f%%, HV=%.1f%%) -- skipping",
+                    crypto_asset, option_check["theoretical_yes_price"], yes_mkt_price,
+                    option_check["price_edge"], option_check["implied_vol"] * 100, option_check["historical_vol"] * 100
+                )
                 continue
 
             # Regime detection -- skip CRASH, warn on VOLATILE
@@ -463,9 +500,12 @@ def run():
 
         if tg_cmd.is_paused:
             click.echo("Trading paused via Telegram — skipping new entries")
-            _run_scan(config, executor=None)
+            opps = _run_scan(config, executor=None)
         else:
-            _run_scan(config, executor=executor)
+            opps = _run_scan(config, executor=executor)
+
+        # Track maximum EV from this scan for dynamic interval
+        _last_scan_max_ev[0] = max([opp.ev for opp in opps], default=0.0)
 
         tg_cmd.set_last_scan(datetime.now(timezone.utc))
 
@@ -482,22 +522,41 @@ def run():
 
     job()  # Run immediately on start
 
-    # Dynamic interval: default 15min, 5min if any open position expires < 6h
+    # Dynamic interval: default 15min, 5min if any open position expires < 6h,
+    # or 5min if a high-EV opportunity exists (High-activity mode)
     def _dynamic_interval() -> int:
         from src.logger import get_open_positions as _gop
         positions = _gop(paper=paper)
         if not positions:
+            max_ev = _last_scan_max_ev[0]
+            min_high_ev = max(0.15, config["trading"].get("ev_threshold", 0.08) * 1.5)
+            if max_ev >= min_high_ev:
+                log.info(
+                    "High-activity mode triggered! High-EV opportunity found (EV = %.2f%% >= %.2f%%). Polling interval shortened to 5 min.",
+                    max_ev * 100, min_high_ev * 100
+                )
+                return 300
             return interval
         for pos in positions:
             expiry_str = pos.get("expiry") or ""
             if expiry_str:
                 try:
-                    exp_dt = datetime.fromisoformat(expiry_str.replace("Z", "+00:00"))
+                    exp_dt = parse_utc_isoformat(expiry_str)
                     hours_left = (exp_dt - datetime.now(timezone.utc)).total_seconds() / 3600
                     if hours_left < 6:
+                        log.info("Near-expiry open position found (<6h left). Polling interval shortened to 5 min.")
                         return max(300, interval // 3)  # 5 min minimum
                 except (ValueError, TypeError):
                     pass
+        # Check high-EV opportunity if open positions exist but none are near-expiry
+        max_ev = _last_scan_max_ev[0]
+        min_high_ev = max(0.15, config["trading"].get("ev_threshold", 0.08) * 1.5)
+        if max_ev >= min_high_ev:
+            log.info(
+                "High-activity mode triggered! High-EV opportunity found (EV = %.2f%% >= %.2f%%). Polling interval shortened to 5 min.",
+                max_ev * 100, min_high_ev * 100
+            )
+            return 300
         return interval
 
     _next_run = time.time() + interval

@@ -23,6 +23,10 @@ log = logging.getLogger(__name__)
 
 DB_PATH = Path(__file__).resolve().parent.parent / "data" / "trades.db"
 
+# Reuse the canonical UTC-safe ISO parser from the package root so cached
+# timestamps and CLOB-returned timestamps are always normalized identically.
+from . import parse_utc_isoformat  # noqa: E402
+
 
 @contextmanager
 def _connect():
@@ -262,8 +266,8 @@ def get_cached_weather(
         if row is None:
             return None
         age = (
-            datetime.now(timezone.utc).replace(tzinfo=None)
-            - datetime.fromisoformat(row["fetched_at"])
+            datetime.now(timezone.utc)
+            - parse_utc_isoformat(row["fetched_at"])
         ).total_seconds()
         if age > ttl_seconds:
             return None

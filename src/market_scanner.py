@@ -31,6 +31,10 @@ CLOB_API     = "https://clob.polymarket.com"
 _TIMEOUT     = 15
 _MAX_RETRIES = 3
 
+# Canonical UTC-safe ISO parser is exposed at the package root so every
+# submodule normalizes Polymarket / CLOB timestamps the same way.
+from . import parse_utc_isoformat  # noqa: E402
+
 
 def _safe_get(url: str, params: dict = None) -> Optional[Union[dict, list]]:
     """HTTP GET with exponential-backoff retry. 4xx errors fail immediately."""
@@ -886,7 +890,7 @@ class MarketScanner:
         expiry_dt = None
         if end_date_str:
             try:
-                expiry_dt = datetime.fromisoformat(end_date_str.replace("Z", "+00:00"))
+                expiry_dt = parse_utc_isoformat(end_date_str)
             except ValueError:
                 pass
 

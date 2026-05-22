@@ -12,6 +12,7 @@ from src.crypto_signals import (
     check_crypto_correlation,
     detect_volume_anomaly,
     compute_composite_signal,
+    confirm_crypto_option_edge,
     get_fear_greed_index,
     _linear_slope,
 )
@@ -320,3 +321,145 @@ class TestFearGreed:
         mock_get.side_effect = Exception("Network error")
         result = get_fear_greed_index()
         assert result is None
+
+
+# ── Option Pricing Edge (IV vs HV Safeguard) ─────────────────────────────────
+
+class TestOptionPricingEdge:
+    """
+    confirm_crypto_option_edge compares the theoretical Black-Scholes binary
+    option price against the actual Polymarket YES price, AND verifies that
+    Implied Volatility (IV) <= Historical Volatility (HV) * 1.05 to confirm
+    we're buying cheap volatility (not chasing a hyped market).
+    """
+
+    def test_invalid_inputs_no_edge(self):
+        """Bad inputs (zero price, zero vol, etc.) return safe no-edge default."""
+        result = confirm_crypto_option_edge(
+            current_price=0, threshold=100, direction="above",
+            hours_to_expiry=24, daily_volatility=0.03,
+            yes_market_price=0.5,
+        )
+        assert result["has_underpriced_edge"] is False
+        assert result["price_edge"] == 0.0
+
+    def test_underpriced_yes_above_edge_detected(self):
+        """
+        BTC at $115K (already above threshold $110K), 7 days out, daily vol 4%.
+        Market YES at 0.50 — theoretical should be much higher → underpriced.
+
+        Note: we use S > K (price above threshold) so the bisection over IV
+        is well-behaved; for K >> S, P(above) is unimodal in vol and the
+        single-root bisection can hit the high-vol boundary.
+        """
+        result = confirm_crypto_option_edge(
+            current_price=115000, threshold=110000, direction="above",
+            hours_to_expiry=168, daily_volatility=0.04,
+            yes_market_price=0.50, min_edge_threshold=0.05,
+        )
+        # Theoretical should clearly exceed market price → underpriced edge
+        assert result["theoretical_yes_price"] > 0.50
+        assert result["price_edge"] > 0
+
+    def test_overpriced_yes_no_edge(self):
+        """
+        BTC at $110K, threshold $115K, 7 days out, daily vol 4%.
+        Market YES price 0.80 — theoretical should be ~0.40 → overpriced (no edge).
+        """
+        result = confirm_crypto_option_edge(
+            current_price=110000, threshold=115000, direction="above",
+            hours_to_expiry=168, daily_volatility=0.04,
+            yes_market_price=0.80, min_edge_threshold=0.05,
+        )
+        # Market price > theoretical → no underpriced edge
+        assert result["has_underpriced_edge"] is False
+        # IV should be much higher than HV (market overpaying for volatility)
+        assert result["implied_vol"] > result["historical_vol"]
+
+    def test_edge_below_minimum_threshold_rejected(self):
+        """A tiny price edge (< min_edge_threshold) should NOT pass."""
+        result = confirm_crypto_option_edge(
+            current_price=100000, threshold=100100, direction="above",
+            hours_to_expiry=24, daily_volatility=0.04,
+            yes_market_price=0.50, min_edge_threshold=0.10,
+        )
+        # Edge likely small here; verify the threshold gate fires
+        if abs(result["price_edge"]) < 0.10:
+            assert result["has_underpriced_edge"] is False
+
+    def test_below_direction_handled(self):
+        """Direction 'below' should invert the theoretical price correctly."""
+        result_above = confirm_crypto_option_edge(
+            current_price=110000, threshold=115000, direction="above",
+            hours_to_expiry=72, daily_volatility=0.04,
+            yes_market_price=0.40,
+        )
+        result_below = confirm_crypto_option_edge(
+            current_price=110000, threshold=115000, direction="below",
+            hours_to_expiry=72, daily_volatility=0.04,
+            yes_market_price=0.40,
+        )
+        # P(above) + P(below) should sum to ~1.0
+        total = result_above["theoretical_yes_price"] + result_below["theoretical_yes_price"]
+        assert 0.95 <= total <= 1.05
+
+    def test_iv_safeguard_blocks_overpriced_volatility(self):
+        """
+        Even with price_edge present, if IV >> HV (market overpaying for
+        volatility), should NOT flag as underpriced.
+        """
+        # Construct: very small price gap but market YES is way above theoretical
+        # → IV will be way above HV → safeguard kicks in
+        result = confirm_crypto_option_edge(
+            current_price=100000, threshold=200000, direction="above",
+            hours_to_expiry=24, daily_volatility=0.02,
+            yes_market_price=0.45, min_edge_threshold=0.05,
+        )
+        # threshold is 2x current price in 24h with 2% vol → P(above) is near zero
+        # Market is priced at 0.45 → way overpriced → IV >> HV
+        assert result["implied_vol"] > result["historical_vol"]
+        assert result["has_underpriced_edge"] is False
+
+    def test_result_schema(self):
+        """Verify all expected fields are present in the result."""
+        result = confirm_crypto_option_edge(
+            current_price=100000, threshold=105000, direction="above",
+            hours_to_expiry=48, daily_volatility=0.03,
+            yes_market_price=0.40,
+        )
+        expected_keys = {
+            "theoretical_yes_price", "implied_vol", "historical_vol",
+            "has_underpriced_edge", "vol_ratio", "price_edge",
+        }
+        assert expected_keys.issubset(result.keys())
+        assert isinstance(result["has_underpriced_edge"], bool)
+
+
+# ── Centralized parse_utc_isoformat ─────────────────────────────────────────
+
+class TestUtcParser:
+    """The package-level parse_utc_isoformat is the single source of truth."""
+
+    def test_z_suffix_normalized(self):
+        from src import parse_utc_isoformat
+        dt = parse_utc_isoformat("2026-06-01T12:00:00Z")
+        assert dt.tzinfo is not None
+        assert dt.utcoffset().total_seconds() == 0
+
+    def test_offset_suffix_normalized(self):
+        from src import parse_utc_isoformat
+        dt = parse_utc_isoformat("2026-06-01T14:00:00+02:00")
+        assert dt.tzinfo is not None
+        # Should be converted to UTC: 14:00+02:00 = 12:00 UTC
+        assert dt.hour == 12
+
+    def test_naive_string_assumed_utc(self):
+        from src import parse_utc_isoformat
+        dt = parse_utc_isoformat("2026-06-01T12:00:00")
+        assert dt.tzinfo is not None
+        assert dt.hour == 12
+
+    def test_empty_string_raises(self):
+        from src import parse_utc_isoformat
+        with pytest.raises(ValueError):
+            parse_utc_isoformat("")

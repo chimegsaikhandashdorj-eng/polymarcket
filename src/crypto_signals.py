@@ -364,3 +364,137 @@ def compute_composite_signal(
         "mtf_alignment": alignment,
         "fear_greed": fg.get("value") if fg else None,
     }
+
+
+# ── 7. Option Pricing Model & Volatility Safeguard (IV vs HV) ──────────────────
+
+def _erf_approx(x: float) -> float:
+    """Abramowitz & Stegun rational approximation of erf. Max error < 1.5e-7."""
+    if not math.isfinite(x):
+        return 1.0 if x > 0 else -1.0
+    sign = 1.0 if x >= 0 else -1.0
+    x = abs(x)
+    t = 1.0 / (1.0 + 0.3275911 * x)
+    poly = t * (0.254829592 + t * (-0.284496736 + t * (1.421413741
+           + t * (-1.453152027 + t * 1.061405429))))
+    return sign * (1.0 - poly * math.exp(-x * x))
+
+
+def confirm_crypto_option_edge(
+    current_price: float,
+    threshold: float,
+    direction: str,
+    hours_to_expiry: float,
+    daily_volatility: float,
+    yes_market_price: float,
+    min_edge_threshold: float = 0.02,
+) -> dict:
+    """
+    Quant Option Pricing Model to verify underpriced YES shares.
+    Compares Implied Volatility (IV) from Polymarket YES price
+    with Historical Volatility (HV) from recent asset returns.
+
+    Returns:
+        dict: {
+            "theoretical_yes_price": float,
+            "implied_vol": float,
+            "historical_vol": float,
+            "has_underpriced_edge": bool,
+            "vol_ratio": float,
+            "price_edge": float
+        }
+    """
+    if current_price <= 0 or threshold <= 0 or hours_to_expiry <= 0 or daily_volatility <= 0:
+        return {
+            "theoretical_yes_price": yes_market_price,
+            "implied_vol": daily_volatility,
+            "historical_vol": daily_volatility,
+            "has_underpriced_edge": False,
+            "vol_ratio": 1.0,
+            "price_edge": 0.0,
+        }
+
+    # Time to expiry in days
+    T = max(0.01, hours_to_expiry / 24.0)
+    sigma_hv = daily_volatility
+
+    # 1. Calculate theoretical price under Black-Scholes binary option model (r = 0)
+    # Price of Binary Call (above) = N(d2), where d2 = (ln(S0/K) - 0.5 * sigma^2 * T) / (sigma * sqrt(T))
+    # We define log_ratio = ln(K/S0) = -ln(S0/K), so d2 = (-log_ratio - 0.5 * sigma^2 * T) / (sigma * sqrt(T))
+    log_ratio = math.log(threshold / current_price)
+    sigma_T = sigma_hv * math.sqrt(T)
+
+    if sigma_T > 0:
+        d2 = (-log_ratio - 0.5 * (sigma_hv ** 2) * T) / sigma_T
+        p_theo_above = 0.5 * (1.0 + _erf_approx(d2 / 1.4142135623730951))
+    else:
+        p_theo_above = 0.99 if current_price > threshold else 0.01
+
+    p_theo_above = max(0.01, min(0.99, p_theo_above))
+    theoretical_yes_price = p_theo_above if direction == "above" else (1.0 - p_theo_above)
+
+    # 2. Bisection Solver to estimate Implied Volatility (IV) from yes_market_price
+    # We solve for vol that yields yes_market_price
+    target_price = max(0.001, min(0.999, yes_market_price))
+
+    def price_from_vol(vol: float) -> float:
+        vol = max(0.0001, vol)
+        s_T = vol * math.sqrt(T)
+        d2_val = (-log_ratio - 0.5 * (vol ** 2) * T) / s_T
+        p_above = 0.5 * (1.0 + _erf_approx(d2_val / 1.4142135623730951))
+        return p_above if direction == "above" else (1.0 - p_above)
+
+    low_vol, high_vol = 0.0001, 10.0
+    sigma_iv = daily_volatility  # fallback
+    best_diff = float("inf")
+
+    p_low = price_from_vol(low_vol)
+    p_high = price_from_vol(high_vol)
+
+    if target_price <= min(p_low, p_high):
+        sigma_iv = low_vol
+    elif target_price >= max(p_low, p_high):
+        sigma_iv = high_vol
+    else:
+        for _ in range(30):
+            mid_vol = (low_vol + high_vol) / 2.0
+            p_mid = price_from_vol(mid_vol)
+            diff = abs(p_mid - target_price)
+            if diff < best_diff:
+                best_diff = diff
+                sigma_iv = mid_vol
+
+            # Since binary option price is monotonic with respect to volatility
+            # (depending on whether S0 > K or S0 < K), we can safely use the range endpoints
+            if (p_mid > target_price) == (p_high > p_low):
+                high_vol = mid_vol
+                p_high = p_mid
+            else:
+                low_vol = mid_vol
+                p_low = p_mid
+
+    # 3. Verify underpriced edge and cheap volatility (IV vs HV)
+    price_edge = theoretical_yes_price - yes_market_price
+    vol_ratio = sigma_iv / sigma_hv if sigma_hv > 0 else 1.0
+
+    # Underpriced YES shares condition:
+    # A) Theoretical YES price is greater than actual YES market price by the minimum edge
+    # B) AND Implied Volatility (IV) <= Historical Volatility (HV) * 1.05 (confirms cheap volatility safeguard)
+    has_underpriced_edge = (price_edge >= min_edge_threshold) and (sigma_iv <= sigma_hv * 1.05)
+
+    log.debug(
+        "Option pricing check: S0=%.2f K=%.2f T=%.2fd HV=%.2f%% IV=%.2f%% "
+        "TheoYES=%.3f MktYES=%.3f Edge=%.3f Underpriced=%s",
+        current_price, threshold, T, sigma_hv * 100, sigma_iv * 100,
+        theoretical_yes_price, yes_market_price, price_edge, has_underpriced_edge
+    )
+
+    return {
+        "theoretical_yes_price": round(theoretical_yes_price, 4),
+        "implied_vol": round(sigma_iv, 4),
+        "historical_vol": round(sigma_hv, 4),
+        "has_underpriced_edge": has_underpriced_edge,
+        "vol_ratio": round(vol_ratio, 3),
+        "price_edge": round(price_edge, 4),
+    }
+
