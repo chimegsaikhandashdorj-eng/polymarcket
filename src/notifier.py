@@ -190,6 +190,122 @@ def escape(s: str) -> str:
     return html.escape(str(s), quote=False)
 
 
+# ── Inline keyboard helpers ──────────────────────────────────────────────────
+
+def _send_with_keyboard(
+    text: str,
+    keyboard: List[List[dict]],
+    *,
+    silent: Optional[bool] = None,
+) -> bool:
+    """
+    Send a message with an inline keyboard.
+
+    keyboard: list of button rows, each row is a list of dicts with:
+      {"text": "Label", "callback_data": "action:param"}
+    """
+    if not is_configured():
+        return False
+    use_silent = _is_quiet_hour() if silent is None else silent
+    success = False
+    for chat_id in _CHAT_IDS:
+        payload = {
+            "chat_id": chat_id,
+            "text": text[:_MAX_MSG_LEN],
+            "parse_mode": "HTML",
+            "disable_web_page_preview": True,
+            "reply_markup": {"inline_keyboard": keyboard},
+        }
+        if use_silent:
+            payload["disable_notification"] = True
+        if _post_with_retry(payload):
+            success = True
+    return success
+
+
+def answer_callback(callback_query_id: str, text: str = "") -> bool:
+    """Answer a callback query (removes loading spinner on the button)."""
+    if not _TOKEN:
+        return False
+    url = f"{_API_BASE}{_TOKEN}/answerCallbackQuery"
+    payload = {"callback_query_id": callback_query_id}
+    if text:
+        payload["text"] = text[:200]
+    try:
+        r = requests.post(url, json=payload, timeout=5)
+        return r.status_code == 200
+    except requests.RequestException:
+        return False
+
+
+def edit_message(chat_id: str, message_id: int, text: str, keyboard: Optional[List[List[dict]]] = None) -> bool:
+    """Edit an existing message (used after callback query to update inline keyboard)."""
+    if not _TOKEN:
+        return False
+    url = f"{_API_BASE}{_TOKEN}/editMessageText"
+    payload = {
+        "chat_id": chat_id,
+        "message_id": message_id,
+        "text": text[:_MAX_MSG_LEN],
+        "parse_mode": "HTML",
+        "disable_web_page_preview": True,
+    }
+    if keyboard is not None:
+        payload["reply_markup"] = {"inline_keyboard": keyboard}
+    try:
+        r = requests.post(url, json=payload, timeout=10)
+        return r.status_code == 200
+    except requests.RequestException:
+        return False
+
+
+def send_document(file_path: str, caption: str = "", *, silent: Optional[bool] = None) -> bool:
+    """Send a file (CSV, etc.) to all configured chats."""
+    if not is_configured():
+        return False
+    use_silent = _is_quiet_hour() if silent is None else silent
+    url = f"{_API_BASE}{_TOKEN}/sendDocument"
+    success = False
+    try:
+        with open(file_path, "rb") as f:
+            for chat_id in _CHAT_IDS:
+                f.seek(0)
+                data = {"chat_id": chat_id, "caption": caption[:1024], "parse_mode": "HTML"}
+                if use_silent:
+                    data["disable_notification"] = "true"
+                r = requests.post(url, data=data, files={"document": f}, timeout=30)
+                if r.status_code == 200:
+                    success = True
+    except (OSError, requests.RequestException) as exc:
+        log.debug("sendDocument failed: %s", exc)
+    return success
+
+
+def send_photo(photo_bytes: bytes, caption: str = "", *, silent: Optional[bool] = None) -> bool:
+    """Send a photo (PNG bytes) to all configured chats."""
+    if not is_configured():
+        return False
+    use_silent = _is_quiet_hour() if silent is None else silent
+    url = f"{_API_BASE}{_TOKEN}/sendPhoto"
+    success = False
+    import io
+    for chat_id in _CHAT_IDS:
+        data = {"chat_id": chat_id, "caption": caption[:1024], "parse_mode": "HTML"}
+        if use_silent:
+            data["disable_notification"] = "true"
+        try:
+            r = requests.post(
+                url, data=data,
+                files={"photo": ("chart.png", io.BytesIO(photo_bytes), "image/png")},
+                timeout=30,
+            )
+            if r.status_code == 200:
+                success = True
+        except requests.RequestException as exc:
+            log.debug("sendPhoto failed: %s", exc)
+    return success
+
+
 # ── Public notify_* helpers ──────────────────────────────────────────────────
 
 def notify_trade(

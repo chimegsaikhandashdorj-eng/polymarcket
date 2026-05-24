@@ -363,13 +363,16 @@ def _check_early_exits(paper: bool, config: dict) -> None:
         if not market_id or market_id in current_prices:
             continue
         data = _safe_get(f"{CLOB_API}/markets/{market_id}")
-        if data and "tokens" in data:
-            for token in data["tokens"]:
-                if token.get("outcome") == "Yes":
-                    try:
-                        current_prices[market_id] = float(token.get("price", 0))
-                    except (ValueError, TypeError):
-                        pass
+        # CLOB market endpoint returns an object; narrow before subscripting.
+        if not isinstance(data, dict):
+            continue
+        tokens = data.get("tokens") or []
+        for token in tokens:
+            if isinstance(token, dict) and token.get("outcome") == "Yes":
+                try:
+                    current_prices[market_id] = float(token.get("price", 0))
+                except (ValueError, TypeError):
+                    pass
 
     if not current_prices:
         return
@@ -593,20 +596,30 @@ def scan():
 @click.option("--start", default="2024-01-01", help="Start date YYYY-MM-DD")
 @click.option("--end", default="2024-12-31", help="End date YYYY-MM-DD")
 @click.option("--bankroll", default=500.0, type=float, help="Starting bankroll in USDC")
-def backtest(start: str, end: str, bankroll: float):
+@click.option("--engine", default="custom", type=click.Choice(["custom", "backtrader"]),
+              help="Backtesting engine: custom (weather markets) or backtrader (crypto OHLCV)")
+@click.option("--asset", default="bitcoin", help="Crypto asset for backtrader engine")
+def backtest(start: str, end: str, bankroll: float, engine: str, asset: str):
     """Run historical backtesting simulation."""
     config = load_config()
 
     from src.logger import init_db
-    from src.backtester import Backtester
     from src.dashboard import show_backtest_results
 
     init_db()
 
-    click.echo(f"Running backtest: {start} -> {end}  bankroll={bankroll:.0f} USDC")
-    bt = Backtester(config)
-    results = bt.run(start_date=start, end_date=end, initial_bankroll=bankroll)
-    show_backtest_results(results)
+    if engine == "backtrader":
+        from src.backtester import BacktraderEngine
+        click.echo(f"Running Backtrader backtest: {asset} {start} -> {end}  bankroll={bankroll:.0f} USDC")
+        bt_engine = BacktraderEngine(config)
+        results = bt_engine.run(asset=asset, start_date=start, end_date=end, initial_bankroll=bankroll)
+        show_backtest_results(results)
+    else:
+        from src.backtester import Backtester
+        click.echo(f"Running backtest: {start} -> {end}  bankroll={bankroll:.0f} USDC")
+        bt = Backtester(config)
+        results = bt.run(start_date=start, end_date=end, initial_bankroll=bankroll)
+        show_backtest_results(results)
 
 
 @cli.command("walk-forward")

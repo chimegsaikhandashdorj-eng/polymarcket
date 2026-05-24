@@ -40,7 +40,11 @@ _MAX_RETRIES = 3
 from . import parse_utc_isoformat  # noqa: E402
 
 
-def _safe_get(url: str, params: dict = None, headers: dict = None) -> Optional[dict]:
+def _safe_get(
+    url: str,
+    params: Optional[dict] = None,
+    headers: Optional[dict] = None,
+) -> Optional[dict]:
     """HTTP GET with exponential-backoff retry. Non-retryable 4xx errors fail immediately."""
     for attempt in range(_MAX_RETRIES):
         try:

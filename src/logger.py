@@ -159,7 +159,11 @@ def log_trade(
              entry_price, our_prob, confidence, ev, "OPEN",
              int(paper), city, metric, expiry),
         )
-        trade_id = cur.lastrowid
+        # sqlite3 returns Optional[int]; after an INSERT it's always set,
+        # but we guard explicitly so the return type stays a concrete int.
+        if cur.lastrowid is None:
+            raise RuntimeError("sqlite INSERT returned no row id")
+        trade_id: int = cur.lastrowid
     log.info(
         "Trade logged id=%d  %s %s  size=%.2f  entry=%.3f  EV=%.3f  paper=%s",
         trade_id, side, market_title[:50], size_usdc, entry_price, ev, paper,

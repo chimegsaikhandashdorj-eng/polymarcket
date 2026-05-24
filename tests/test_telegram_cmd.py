@@ -62,14 +62,19 @@ def base_config():
 
 @pytest.fixture(autouse=True)
 def patched_send(monkeypatch):
-    """Capture every _send call so we can assert on outgoing text."""
+    """Capture every _send and _send_with_keyboard call so we can assert on outgoing text."""
     sent: list = []
 
     def fake_send(text, *, silent=None):
         sent.append({"text": text, "silent": silent})
         return True
 
+    def fake_send_kb(text, keyboard, *, silent=None):
+        sent.append({"text": text, "silent": silent, "keyboard": keyboard})
+        return True
+
     monkeypatch.setattr(telegram_cmd, "_send", fake_send)
+    monkeypatch.setattr(telegram_cmd, "_send_with_keyboard", fake_send_kb)
     return sent
 
 
@@ -133,8 +138,8 @@ class TestRiskCommands:
             commander._cmd_limits([])
         text = patched_send[0]["text"]
         assert "Daily" in text and "Weekly" in text and "Monthly" in text
-        # Progress bars present (10-char ASCII bars between square brackets)
-        assert "[" in text and "]" in text
+        # Emoji bars present (green/yellow/red squares + white squares)
+        assert "\U0001f7e9" in text or "\U0001f7e8" in text or "\U0001f7e5" in text
 
     def test_config_view(self, commander, patched_send):
         commander._cmd_config([])
@@ -205,8 +210,8 @@ class TestHelp:
         commander._cmd_help([])
         text = patched_send[0]["text"]
         # A representative sample of supported commands should appear
-        for cmd in ["/status", "/pnl", "/positions", "/risk", "/limits",
-                    "/crypto", "/pause", "/resume", "/version"]:
+        for cmd in ["/status", "/pnl", "/positions",
+                    "/crypto", "/pause", "/resume", "/config"]:
             assert cmd in text
 
 

@@ -251,8 +251,21 @@ crypto:
   min_hours_to_expiry: 12          # Don't trade crypto markets expiring < 12h
   momentum_weight: 0.3             # How much to trust trend vs. pure stats
   max_spread: 0.04                 # 4% max spread for crypto (tighter than weather)
+  ccxt_exchanges:                  # CCXT exchanges for price data (order = priority)
+    - binance
+    - kraken
+    - okx
+  macro_signals: true              # Enable OpenBB/Yahoo macro signals (DXY, VIX)
 
 # -- Square-root market impact slippage model ---------------------------
 slippage:
   base: 0.005                     # Base slippage 0.5%
   max_impact: 0.02                # Skip trade if sqrt impact would exceed 2%
+
+# -- Telegram bot scheduler --------------------------------------------
+telegram:
+  scheduler:
+    morning_hour: 9                # UTC hour for morning report (bankroll, positions)
+    evening_hour: 21               # UTC hour for evening summary (PnL, performance)
+    alert_check_minutes: 15        # How often to check price alerts (minutes)
+    weekly_summary_dow: 0          # Day of week for weekly summary (0=Monday, 6=Sunday)

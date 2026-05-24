@@ -95,7 +95,9 @@ def resolve_open_trades(paper: bool = True) -> int:
     resolved_count = 0
     for trade in open_trades:
         is_resolved, res_price = _fetch_resolution(trade["market_id"])
-        if not is_resolved:
+        # is_resolved guarantees a numeric res_price, but the type system
+        # can't know that — narrow it explicitly so downstream math is safe.
+        if not is_resolved or res_price is None:
             continue
 
         side = trade["side"]
