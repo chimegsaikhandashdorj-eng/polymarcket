@@ -4,6 +4,7 @@ Rich CLI dashboard — shows live markets, open positions, and PnL summary.
 
 import logging
 from datetime import datetime, timezone
+from typing import Optional
 
 from rich.console import Console
 from rich.table import Table
@@ -159,7 +160,7 @@ def show_scan_header(
     )
 
 
-def show_loss_limits_panel(paper: bool = True, config: dict = None) -> None:
+def show_loss_limits_panel(paper: bool = True, config: Optional[dict] = None) -> None:
     """Display daily/weekly/monthly loss consumption vs. configured limits."""
     config = config or {}
     ll = config.get("loss_limits", {})

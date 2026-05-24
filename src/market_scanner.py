@@ -31,8 +31,12 @@ CLOB_API     = "https://clob.polymarket.com"
 _TIMEOUT     = 15
 _MAX_RETRIES = 3
 
+# Canonical UTC-safe ISO parser is exposed at the package root so every
+# submodule normalizes Polymarket / CLOB timestamps the same way.
+from . import parse_utc_isoformat  # noqa: E402
 
-def _safe_get(url: str, params: dict = None) -> Optional[Union[dict, list]]:
+
+def _safe_get(url: str, params: Optional[dict] = None) -> Optional[Union[dict, list]]:
     """HTTP GET with exponential-backoff retry. 4xx errors fail immediately."""
     for attempt in range(_MAX_RETRIES):
         try:
@@ -370,7 +374,8 @@ def _parse_date_from_title(title: str) -> Optional[datetime]:
 def _get_clob_midpoint(token_id: str) -> Optional[float]:
     """Return midpoint price for a YES token from CLOB (0-1 scale)."""
     data = _safe_get(f"{CLOB_API}/midpoint", params={"token_id": token_id})
-    if not data:
+    # CLOB returns an object here; defensively reject list/None responses.
+    if not isinstance(data, dict):
         return None
     try:
         mid = data.get("mid")
@@ -393,7 +398,8 @@ def _get_bid_ask_spread(yes_token_id: str) -> dict:
     """
     empty = {"best_bid": None, "best_ask": None, "mid": None, "spread": 0.0}
     data = _safe_get(f"{CLOB_API}/orderbook/{yes_token_id}")
-    if not data:
+    # CLOB returns an object {bids, asks}; reject list/None to keep .get safe.
+    if not isinstance(data, dict):
         return empty
     try:
         bids = sorted(
@@ -886,7 +892,7 @@ class MarketScanner:
         expiry_dt = None
         if end_date_str:
             try:
-                expiry_dt = datetime.fromisoformat(end_date_str.replace("Z", "+00:00"))
+                expiry_dt = parse_utc_isoformat(end_date_str)
             except ValueError:
                 pass
 
@@ -924,7 +930,9 @@ class MarketScanner:
         best_ask = spread_data["best_ask"] or yes_price
         # Only use real bid data; a fabricated bid produces a fake spread that inflates EV
         best_bid = spread_data["best_bid"]
-        spread   = spread_data["spread"] if best_bid is not None else 0.0
+        # _get_bid_ask_spread always populates "spread" (defaults to 0.0); coerce
+        # to a concrete float so downstream code & type checks stay happy.
+        spread = float(spread_data.get("spread") or 0.0) if best_bid is not None else 0.0
 
         # Parse city and condition
         city_match = self.city_index.match(title)
@@ -953,6 +961,9 @@ class MarketScanner:
         # Crypto asset field (for crypto markets)
         crypto_asset = condition.get("crypto_asset")
 
+        # best_ask is guaranteed non-None here (falls back to yes_price above),
+        # but the type checker sees Optional from spread_data — narrow it.
+        best_ask_concrete: float = float(best_ask) if best_ask is not None else float(yes_price)
         return {
             "condition_id":    condition_id,
             "yes_token_id":    yes_token,
@@ -960,7 +971,7 @@ class MarketScanner:
             "title":           title,
             "yes_price":       round(yes_price, 4),
             "no_price":        round(no_price, 4),
-            "best_ask":        round(best_ask, 4),
+            "best_ask":        round(best_ask_concrete, 4),
             "best_bid":        round(best_bid, 4) if best_bid is not None else None,
             "spread":          round(spread, 4),
             "volume_usdc":     volume,

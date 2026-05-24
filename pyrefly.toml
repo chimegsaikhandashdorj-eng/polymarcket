@@ -1,0 +1,39 @@
+# Pyrefly type-checker config for the Polymarket trading bot.
+#
+# Goals:
+#   1. Check src/ and main.py thoroughly.
+#   2. Skip tests/ and scripts/ — they're either pytest fixtures or
+#      throwaway analysis scripts and would explode the noise floor.
+#   3. Resolve imports from the active venv so we don't drown in
+#      missing-import warnings for runtime-installed packages.
+#   4. Silence missing-import for optional dependencies that the code
+#      already guards with try/except (scipy, py_clob_client).
+
+project-includes = [
+    "src/**/*.py",
+    "main.py",
+]
+
+project-excludes = [
+    "tests/**",
+    "scripts/**",
+    "**/__pycache__/**",
+    ".venv/**",
+    "venv/**",
+]
+
+# Use the active Python interpreter so pyrefly can read installed
+# site-packages (yaml, click, requests, dotenv, etc.).
+python-interpreter = "C:\\Users\\User\\AppData\\Local\\hermes\\hermes-agent\\venv\\Scripts\\python.exe"
+
+# Optional dependencies are guarded with try/except in the source —
+# treat them as ignored so missing modules don't pollute the report.
+search-path = [
+    "src",
+    ".",
+]
+
+# Ignore missing-import for known-optional libraries (try/except guarded
+# in the source) and stdlib-shadowed names.
+[errors]
+missing-import = false

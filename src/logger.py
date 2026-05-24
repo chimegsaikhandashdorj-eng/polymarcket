@@ -23,6 +23,10 @@ log = logging.getLogger(__name__)
 
 DB_PATH = Path(__file__).resolve().parent.parent / "data" / "trades.db"
 
+# Reuse the canonical UTC-safe ISO parser from the package root so cached
+# timestamps and CLOB-returned timestamps are always normalized identically.
+from . import parse_utc_isoformat  # noqa: E402
+
 
 @contextmanager
 def _connect():
@@ -155,7 +159,11 @@ def log_trade(
              entry_price, our_prob, confidence, ev, "OPEN",
              int(paper), city, metric, expiry),
         )
-        trade_id = cur.lastrowid
+        # sqlite3 returns Optional[int]; after an INSERT it's always set,
+        # but we guard explicitly so the return type stays a concrete int.
+        if cur.lastrowid is None:
+            raise RuntimeError("sqlite INSERT returned no row id")
+        trade_id: int = cur.lastrowid
     log.info(
         "Trade logged id=%d  %s %s  size=%.2f  entry=%.3f  EV=%.3f  paper=%s",
         trade_id, side, market_title[:50], size_usdc, entry_price, ev, paper,
@@ -262,8 +270,8 @@ def get_cached_weather(
         if row is None:
             return None
         age = (
-            datetime.now(timezone.utc).replace(tzinfo=None)
-            - datetime.fromisoformat(row["fetched_at"])
+            datetime.now(timezone.utc)
+            - parse_utc_isoformat(row["fetched_at"])
         ).total_seconds()
         if age > ttl_seconds:
             return None

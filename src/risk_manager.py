@@ -8,7 +8,7 @@ import logging
 import os
 import sqlite3
 from dataclasses import dataclass
-from typing import List
+from typing import List, Optional
 
 from .logger import (
     get_daily_loss, get_weekly_loss, get_monthly_loss,
@@ -124,6 +124,7 @@ class RiskManager:
         now = _t.time()
         if now - self._peak_ts < self._cache_ttl and self._peak_cache > 0:
             return self._peak_cache
+        conn: Optional[sqlite3.Connection] = None
         try:
             conn = sqlite3.connect(str(DB_PATH))
             conn.row_factory = sqlite3.Row
@@ -132,13 +133,14 @@ class RiskManager:
                 "ORDER BY timestamp ASC",
                 (int(self.paper),),
             ).fetchall()
-            conn.close()
-        except Exception:
-            try:
-                conn.close()
-            except Exception:
-                pass
+        except sqlite3.Error:
             return initial
+        finally:
+            if conn is not None:
+                try:
+                    conn.close()
+                except sqlite3.Error:
+                    pass
         running = initial
         peak = initial
         for r in rows:
@@ -155,6 +157,7 @@ class RiskManager:
         now = _t.time()
         if now - self._streak_ts < self._cache_ttl:
             return self._streak_cache
+        conn: Optional[sqlite3.Connection] = None
         try:
             conn = sqlite3.connect(str(DB_PATH))
             conn.row_factory = sqlite3.Row
@@ -163,13 +166,14 @@ class RiskManager:
                 "ORDER BY timestamp DESC LIMIT 10",
                 (int(self.paper),),
             ).fetchall()
-            conn.close()
-        except Exception:
-            try:
-                conn.close()
-            except Exception:
-                pass
+        except sqlite3.Error:
             return 0
+        finally:
+            if conn is not None:
+                try:
+                    conn.close()
+                except sqlite3.Error:
+                    pass
         count = 0
         for r in rows:
             if r["outcome"] == "LOSS":

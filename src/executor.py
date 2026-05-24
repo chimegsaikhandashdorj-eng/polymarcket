@@ -127,7 +127,8 @@ class TradeExecutor:
         try:
             from .market_scanner import CLOB_API, _safe_get as _scanner_get
             data = _scanner_get(f"{CLOB_API}/orderbook/{token_id}")
-            if data:
+            # CLOB returns an object {asks: [...]}; defensively reject list/None.
+            if isinstance(data, dict):
                 asks = sorted(
                     [
                         (float(a["price"]), float(a.get("size", 0)))
@@ -393,6 +394,9 @@ class TradeExecutor:
                 size=token_count,
                 side=Side.BUY,
             )
+            if self._clob_client is None:
+                log.error("[LIVE] CLOB client not initialized — cannot place order")
+                return None
             resp = self._clob_client.create_and_post_order(order_args)
 
             if resp and resp.get("success"):

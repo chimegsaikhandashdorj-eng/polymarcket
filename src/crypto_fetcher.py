@@ -1,10 +1,14 @@
 """
 Crypto price data fetcher — multi-source ensemble for price predictions.
 
-Sources:
-  1. CoinGecko API    — free, no key needed (30 req/min)
-  2. Binance API      — free, no key needed (high-rate)
-  3. CoinPaprika API  — free, no key needed
+Sources (via CCXT unified interface + direct API fallbacks):
+  CCXT exchanges (configurable, default: binance, kraken, coinbasepro, okx):
+    - Unified OHLCV, ticker, and orderbook via ccxt library
+    - 100+ exchanges supported through a single interface
+  Direct API fallbacks (used when CCXT is unavailable):
+    1. CoinGecko API    — free, no key needed (30 req/min)
+    2. Binance API      — free, no key needed (high-rate)
+    3. CoinPaprika API  — free, no key needed
 
 Returns consensus price data including:
   - current_price (USD)
@@ -29,16 +33,29 @@ _SESSION = requests.Session()
 _SESSION.headers.update({"User-Agent": "polymarket-crypto-bot/1.0"})
 _TIMEOUT = 10
 
+try:
+    import ccxt
+    _HAS_CCXT = True
+except ImportError:
+    _HAS_CCXT = False
+
+try:
+    import numpy as np
+    import talib
+    _HAS_TALIB = True
+except ImportError:
+    _HAS_TALIB = False
+
 
 # ── Supported assets ──────────────────────────────────────────────────────────
 
 SUPPORTED_ASSETS = {
-    "bitcoin":  {"symbol": "BTC", "coingecko_id": "bitcoin", "binance": "BTCUSDT"},
-    "ethereum": {"symbol": "ETH", "coingecko_id": "ethereum", "binance": "ETHUSDT"},
-    "solana":   {"symbol": "SOL", "coingecko_id": "solana", "binance": "SOLUSDT"},
-    "xrp":      {"symbol": "XRP", "coingecko_id": "ripple", "binance": "XRPUSDT"},
-    "dogecoin": {"symbol": "DOGE", "coingecko_id": "dogecoin", "binance": "DOGEUSDT"},
-    "cardano":  {"symbol": "ADA", "coingecko_id": "cardano", "binance": "ADAUSDT"},
+    "bitcoin":  {"symbol": "BTC", "ccxt_symbol": "BTC/USDT", "coingecko_id": "bitcoin", "binance": "BTCUSDT"},
+    "ethereum": {"symbol": "ETH", "ccxt_symbol": "ETH/USDT", "coingecko_id": "ethereum", "binance": "ETHUSDT"},
+    "solana":   {"symbol": "SOL", "ccxt_symbol": "SOL/USDT", "coingecko_id": "solana", "binance": "SOLUSDT"},
+    "xrp":      {"symbol": "XRP", "ccxt_symbol": "XRP/USDT", "coingecko_id": "ripple", "binance": "XRPUSDT"},
+    "dogecoin": {"symbol": "DOGE", "ccxt_symbol": "DOGE/USDT", "coingecko_id": "dogecoin", "binance": "DOGEUSDT"},
+    "cardano":  {"symbol": "ADA", "ccxt_symbol": "ADA/USDT", "coingecko_id": "cardano", "binance": "ADAUSDT"},
 }
 
 # Symbol aliases (for parsing market titles)
@@ -50,6 +67,76 @@ SYMBOL_ALIASES = {
     "doge": "dogecoin", "dogecoin": "dogecoin",
     "ada": "cardano", "cardano": "cardano",
 }
+
+# Default CCXT exchanges (order = priority for OHLCV data)
+_DEFAULT_CCXT_EXCHANGES = ["binance", "kraken", "okx"]
+
+
+# ── CCXT unified fetcher ─────────────────────────────────────────────────────
+
+def _init_ccxt_exchange(exchange_id: str) -> Optional[object]:
+    if not _HAS_CCXT:
+        return None
+    try:
+        exchange_class = getattr(ccxt, exchange_id, None)
+        if exchange_class is None:
+            log.debug("CCXT exchange not found: %s", exchange_id)
+            return None
+        ex = exchange_class({"enableRateLimit": True, "timeout": _TIMEOUT * 1000})
+        return ex
+    except Exception as exc:
+        log.debug("CCXT init failed for %s: %s", exchange_id, exc)
+        return None
+
+
+def _fetch_ccxt_ohlcv(
+    exchange, ccxt_symbol: str, hours: int = 72
+) -> Optional[dict]:
+    """Fetch OHLCV data from any CCXT-compatible exchange."""
+    try:
+        since_ms = int((time.time() - hours * 3600) * 1000)
+        ohlcv = exchange.fetch_ohlcv(
+            ccxt_symbol, timeframe="1h", since=since_ms, limit=min(hours + 1, 1000)
+        )
+        if not ohlcv or len(ohlcv) < 2:
+            return None
+        # ohlcv: [[timestamp, open, high, low, close, volume], ...]
+        closes = [float(c[4]) for c in ohlcv]
+        highs = [float(c[2]) for c in ohlcv]
+        lows = [float(c[3]) for c in ohlcv]
+        volumes = [float(c[5]) for c in ohlcv]
+        return {
+            "source": f"ccxt_{exchange.id}",
+            "current_price": closes[-1],
+            "hourly_prices": closes,
+            "highs": highs,
+            "lows": lows,
+            "volumes": volumes,
+            "timestamp": time.time(),
+        }
+    except Exception as exc:
+        log.debug("CCXT OHLCV fetch failed (%s): %s", exchange.id, exc)
+        return None
+
+
+def _fetch_ccxt_ticker(exchange, ccxt_symbol: str) -> Optional[dict]:
+    """Fetch current ticker from any CCXT-compatible exchange."""
+    try:
+        ticker = exchange.fetch_ticker(ccxt_symbol)
+        if not ticker or not ticker.get("last"):
+            return None
+        return {
+            "source": f"ccxt_{exchange.id}",
+            "current_price": float(ticker["last"]),
+            "volume_24h": float(ticker.get("quoteVolume") or ticker.get("baseVolume") or 0),
+            "pct_change_24h": float(ticker.get("percentage") or 0),
+            "bid": float(ticker.get("bid") or 0),
+            "ask": float(ticker.get("ask") or 0),
+            "timestamp": time.time(),
+        }
+    except Exception as exc:
+        log.debug("CCXT ticker fetch failed (%s): %s", exchange.id, exc)
+        return None
 
 
 # ── Source 1: CoinGecko ───────────────────────────────────────────────────────
@@ -153,10 +240,10 @@ def _fetch_coinpaprika(asset_id: str) -> Optional[dict]:
         return None
 
 
-# ── Technical Analysis ────────────────────────────────────────────────────────
+# ── Technical Analysis (TA-Lib accelerated with Python fallbacks) ─────────────
 
 def _compute_volatility(hourly_prices: List[float]) -> float:
-    """Annualized volatility from hourly returns."""
+    """Daily volatility from hourly returns."""
     if len(hourly_prices) < 2:
         return 0.0
     returns = [
@@ -167,25 +254,79 @@ def _compute_volatility(hourly_prices: List[float]) -> float:
     if len(returns) < 2:
         return 0.0
     hourly_std = statistics.stdev(returns)
-    # Annualize: hourly_std * sqrt(8760) — but we just want daily for our purpose
     daily_vol = hourly_std * math.sqrt(24)
     return daily_vol
 
 
 def _compute_momentum(hourly_prices: List[float]) -> dict:
     """
-    Simple momentum indicators:
-      - trend: +1 (bullish), -1 (bearish), 0 (sideways)
-      - strength: 0-1 based on SMA crossover
-      - rsi: relative strength index (14-period)
+    Momentum indicators via TA-Lib (C-optimized) with Python fallback.
+    Returns trend, strength, rsi, and extended indicators when TA-Lib is available:
+      macd_signal, bollinger_pct, atr
     """
     if len(hourly_prices) < 25:
         return {"trend": 0, "strength": 0.5, "rsi": 50.0}
 
-    # SMA crossover: short (12h) vs long (24h)
+    if _HAS_TALIB:
+        return _compute_momentum_talib(hourly_prices)
+    return _compute_momentum_fallback(hourly_prices)
+
+
+def _compute_momentum_talib(hourly_prices: List[float]) -> dict:
+    """TA-Lib powered momentum with MACD, Bollinger Bands, ATR."""
+    close = np.array(hourly_prices, dtype=np.float64)
+
+    # SMA crossover
+    sma_12 = talib.SMA(close, timeperiod=12)
+    sma_24 = talib.SMA(close, timeperiod=24)
+    sma_short = sma_12[-1]
+    sma_long = sma_24[-1]
+
+    if np.isnan(sma_short) or np.isnan(sma_long):
+        trend, strength = 0, 0.0
+    elif sma_short > sma_long:
+        trend = 1
+        strength = min(1.0, (sma_short - sma_long) / sma_long * 50)
+    elif sma_short < sma_long:
+        trend = -1
+        strength = min(1.0, (sma_long - sma_short) / sma_long * 50)
+    else:
+        trend, strength = 0, 0.0
+
+    # RSI (14-period)
+    rsi_arr = talib.RSI(close, timeperiod=14)
+    rsi = float(rsi_arr[-1]) if not np.isnan(rsi_arr[-1]) else 50.0
+
+    # MACD (12, 26, 9)
+    macd_line, macd_signal, macd_hist = talib.MACD(close, fastperiod=12, slowperiod=26, signalperiod=9)
+    macd_val = float(macd_hist[-1]) if not np.isnan(macd_hist[-1]) else 0.0
+
+    # Bollinger Bands (20, 2)
+    bb_upper, bb_mid, bb_lower = talib.BBANDS(close, timeperiod=20, nbdevup=2, nbdevdn=2)
+    bb_pct = 0.5
+    if not np.isnan(bb_upper[-1]) and not np.isnan(bb_lower[-1]):
+        bb_range = bb_upper[-1] - bb_lower[-1]
+        if bb_range > 0:
+            bb_pct = (close[-1] - bb_lower[-1]) / bb_range
+
+    # EMA 50 for longer-term trend context
+    ema_50 = talib.EMA(close, timeperiod=min(50, len(close) - 1))
+    above_ema50 = bool(not np.isnan(ema_50[-1]) and close[-1] > ema_50[-1])
+
+    return {
+        "trend": trend,
+        "strength": round(strength, 3),
+        "rsi": round(rsi, 1),
+        "macd_signal": round(macd_val, 4),
+        "bollinger_pct": round(bb_pct, 3),
+        "above_ema50": above_ema50,
+    }
+
+
+def _compute_momentum_fallback(hourly_prices: List[float]) -> dict:
+    """Pure-Python momentum (no TA-Lib)."""
     sma_short = statistics.mean(hourly_prices[-12:])
     sma_long = statistics.mean(hourly_prices[-24:])
-    current = hourly_prices[-1]
 
     if sma_short > sma_long:
         trend = 1
@@ -194,17 +335,14 @@ def _compute_momentum(hourly_prices: List[float]) -> dict:
         trend = -1
         strength = min(1.0, (sma_long - sma_short) / sma_long * 50)
     else:
-        trend = 0
-        strength = 0.0
+        trend, strength = 0, 0.0
 
-    # RSI (14-period)
     rsi = _compute_rsi(hourly_prices[-15:])
-
     return {"trend": trend, "strength": round(strength, 3), "rsi": round(rsi, 1)}
 
 
 def _compute_rsi(prices: List[float], period: int = 14) -> float:
-    """Compute RSI from price list."""
+    """Pure-Python RSI fallback (used when TA-Lib is unavailable)."""
     if len(prices) < period + 1:
         return 50.0
     gains = []
@@ -227,12 +365,36 @@ def _compute_rsi(prices: List[float], period: int = 14) -> float:
     return 100 - (100 / (1 + rs))
 
 
+def compute_atr(highs: List[float], lows: List[float], closes: List[float], period: int = 14) -> float:
+    """Average True Range — TA-Lib accelerated with Python fallback."""
+    if _HAS_TALIB and len(highs) >= period + 1:
+        h = np.array(highs, dtype=np.float64)
+        l = np.array(lows, dtype=np.float64)
+        c = np.array(closes, dtype=np.float64)
+        atr = talib.ATR(h, l, c, timeperiod=period)
+        val = atr[-1]
+        return float(val) if not np.isnan(val) else 0.0
+    # Python fallback
+    if len(highs) < 2 or len(lows) < 2 or len(closes) < 2:
+        return 0.0
+    trs = []
+    for i in range(1, min(len(highs), len(lows), len(closes))):
+        tr = max(
+            highs[i] - lows[i],
+            abs(highs[i] - closes[i - 1]),
+            abs(lows[i] - closes[i - 1]),
+        )
+        trs.append(tr)
+    if not trs:
+        return 0.0
+    return statistics.mean(trs[-period:])
+
+
 def _find_support_resistance(highs: List[float], lows: List[float]) -> dict:
-    """Simple support/resistance from recent highs and lows."""
+    """Support/resistance from recent highs and lows."""
     if not highs or not lows:
         return {"support": None, "resistance": None}
 
-    # Use last 48 hours of data
     recent_highs = highs[-48:]
     recent_lows = lows[-48:]
 
@@ -302,12 +464,36 @@ def _erf_approx(x: float) -> float:
 class CryptoEnsemble:
     """
     Multi-source crypto price fetcher with technical analysis.
-    Returns aggregated data for probability estimation.
+    Uses CCXT unified interface for exchange data + direct API fallbacks.
     """
 
-    def __init__(self, config: dict = None):
+    def __init__(self, config: Optional[dict] = None):
         self._cache: Dict[str, dict] = {}
         self._cache_ttl = 300  # 5 minute cache
+        self._ccxt_exchanges: List = []
+        self._ccxt_initialized = False
+        self._config = config or {}
+
+    def _ensure_ccxt(self) -> None:
+        """Lazy-init CCXT exchanges on first use."""
+        if self._ccxt_initialized:
+            return
+        self._ccxt_initialized = True
+        if not _HAS_CCXT:
+            log.info("CCXT not installed — using direct API fallbacks only")
+            return
+        exchange_ids = (
+            self._config.get("crypto", {}).get("ccxt_exchanges", _DEFAULT_CCXT_EXCHANGES)
+        )
+        for eid in exchange_ids:
+            ex = _init_ccxt_exchange(eid)
+            if ex:
+                self._ccxt_exchanges.append(ex)
+                log.debug("CCXT exchange ready: %s", eid)
+        if self._ccxt_exchanges:
+            log.info("CCXT initialized with %d exchanges: %s",
+                     len(self._ccxt_exchanges),
+                     ", ".join(e.id for e in self._ccxt_exchanges))
 
     def fetch(self, asset: str, hours_ahead: int = 72) -> Optional[dict]:
         """
@@ -326,17 +512,39 @@ class CryptoEnsemble:
         if cached and (time.time() - cached.get("_ts", 0)) < self._cache_ttl:
             return cached
 
+        self._ensure_ccxt()
         info = SUPPORTED_ASSETS[asset_key]
         sources = []
 
-        # Fetch from all sources
-        cg = _fetch_coingecko(info["coingecko_id"], hours=hours_ahead)
-        if cg:
-            sources.append(cg)
+        # ── CCXT exchanges (primary — unified interface) ──
+        ccxt_symbol = info.get("ccxt_symbol", f"{info['symbol']}/USDT")
+        for ex in self._ccxt_exchanges:
+            ohlcv_data = _fetch_ccxt_ohlcv(ex, ccxt_symbol, hours=hours_ahead)
+            if ohlcv_data:
+                sources.append(ohlcv_data)
+                break  # one OHLCV source is enough for hourly data
+        # Ticker from additional CCXT exchanges for price consensus
+        for ex in self._ccxt_exchanges:
+            if any(s["source"] == f"ccxt_{ex.id}" for s in sources):
+                continue  # already have OHLCV from this exchange
+            ticker = _fetch_ccxt_ticker(ex, ccxt_symbol)
+            if ticker:
+                sources.append(ticker)
 
-        bn = _fetch_binance(info["binance"], hours=hours_ahead)
-        if bn:
-            sources.append(bn)
+        # ── Direct API fallbacks (when CCXT misses or unavailable) ──
+        if not any(s.get("hourly_prices") for s in sources):
+            # Need hourly data — try direct APIs
+            cg = _fetch_coingecko(info["coingecko_id"], hours=hours_ahead)
+            if cg:
+                sources.append(cg)
+            bn = _fetch_binance(info["binance"], hours=hours_ahead)
+            if bn:
+                sources.append(bn)
+        else:
+            # Already have hourly from CCXT — just add price sources for consensus
+            cg = _fetch_coingecko(info["coingecko_id"], hours=hours_ahead)
+            if cg:
+                sources.append(cg)
 
         cp = _fetch_coinpaprika(info["coingecko_id"])
         if cp:
@@ -352,7 +560,7 @@ class CryptoEnsemble:
         if current_price is None:
             return None
 
-        # Use best hourly data (prefer Binance for granularity)
+        # Use best hourly data (prefer CCXT OHLCV, then Binance, then CoinGecko)
         hourly = None
         highs = None
         lows = None
@@ -371,7 +579,7 @@ class CryptoEnsemble:
         # Confidence: more sources = higher confidence
         confidence = min(1.0, 0.5 + len(sources) * 0.15)
 
-        # Extract volumes from Binance source if available
+        # Extract volumes (prefer CCXT source)
         volumes = None
         for s in sources:
             if s.get("volumes") and len(s["volumes"]) > 20:

@@ -7,3 +7,15 @@ scipy>=1.7.0
 numpy>=1.21.0
 click>=8.0.0
 # py-clob-client>=0.16.0  # live trading only; requires Python 3.10+
+
+# ── Optional enhanced trading libraries ──────────────────────────────────────
+# Install these for advanced features. The bot works without them using fallbacks.
+ccxt>=4.0.0                 # Unified crypto exchange API (100+ exchanges)
+# TA-Lib>=0.4.28            # C-optimized technical indicators (requires C library)
+#   Install TA-Lib C library first:
+#   - Windows: download from https://github.com/cgohlke/talib-build/releases
+#   - Linux:   apt install libta-lib-dev && pip install TA-Lib
+#   - macOS:   brew install ta-lib && pip install TA-Lib
+backtrader>=1.9.78          # Backtrader backtesting framework
+pandas>=1.5.0               # Required by backtrader
+openbb>=4.0.0               # OpenBB Platform for macro economic data (optional)

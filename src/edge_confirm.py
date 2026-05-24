@@ -235,7 +235,7 @@ def check_early_exits(
 _edge_confirm_instance: Optional[EdgeConfirmation] = None
 
 
-def get_edge_confirmation(config: dict = None) -> EdgeConfirmation:
+def get_edge_confirmation(config: Optional[dict] = None) -> EdgeConfirmation:
     """Get or create the EdgeConfirmation singleton."""
     global _edge_confirm_instance
     if _edge_confirm_instance is None:

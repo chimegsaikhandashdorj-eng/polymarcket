@@ -37,6 +37,11 @@ try:
 except ImportError:
     _HAS_SCIPY = False
 
+from datetime import datetime, timezone
+
+# Reuse the canonical UTC-safe ISO parser from the package root so timestamp
+# comparisons (expiry / target dt) are always tz-aware and unambiguous.
+from . import parse_utc_isoformat
 from .market_scanner import (
     RAIN, SNOW, TEMP_ABOVE, TEMP_BELOW, WIND_ABOVE,
     TEMP_RANGE, TEMP_ABOVE_MAX, TEMP_BELOW_MAX,
@@ -314,10 +319,9 @@ class ProbabilityEngine:
         target_dt_str = market.get("target_dt") or market.get("expiry_dt")
         if target_dt_str:
             try:
-                from datetime import datetime, timezone as _tz
-                target_dt = datetime.fromisoformat(target_dt_str.replace("Z", "+00:00"))
+                target_dt = parse_utc_isoformat(target_dt_str)
                 hours_to_expiry = max(0.0,
-                    (target_dt - datetime.now(_tz.utc)).total_seconds() / 3600)
+                    (target_dt - datetime.now(timezone.utc)).total_seconds() / 3600)
             except (ValueError, TypeError):
                 pass
 

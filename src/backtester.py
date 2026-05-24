@@ -1,10 +1,14 @@
 """
-Backtesting engine.
+Backtesting engine with two backends:
 
-Uses Open-Meteo historical archive for weather and Gamma API for past
-Polymarket markets to simulate the strategy against real historical data.
+1. Custom engine (default) — Uses Open-Meteo historical archive for weather
+   and Gamma API for past Polymarket markets.
+2. Backtrader engine (optional) — Uses the Backtrader framework for crypto
+   strategy backtesting with built-in analyzers (Sharpe, drawdown, etc.).
 
-Run via:  python main.py backtest --start 2024-01-01 --end 2024-12-31
+Run via:
+  python main.py backtest --start 2024-01-01 --end 2024-12-31
+  python main.py backtest --start 2024-01-01 --end 2024-12-31 --engine backtrader
 """
 
 import json
@@ -28,6 +32,13 @@ from .market_scanner import (
 )
 from .logger import DB_PATH
 
+try:
+    import backtrader as bt
+    import numpy as np
+    _HAS_BACKTRADER = True
+except ImportError:
+    _HAS_BACKTRADER = False
+
 log = logging.getLogger(__name__)
 
 GAMMA_API    = "https://gamma-api.polymarket.com"
@@ -37,7 +48,7 @@ _SESSION     = requests.Session()
 _SESSION.headers.update({"User-Agent": "polymarket-weather-bot/1.0"})
 
 
-def _safe_get(url: str, params: dict = None) -> Optional[Union[dict, list]]:
+def _safe_get(url: str, params: Optional[dict] = None) -> Optional[Union[dict, list]]:
     try:
         r = _SESSION.get(url, params=params, timeout=_TIMEOUT)
         r.raise_for_status()
@@ -64,7 +75,8 @@ def fetch_historical_weather(
         "daily": "precipitation_sum,temperature_2m_max,temperature_2m_min,windspeed_10m_max",
         "timezone": "UTC",
     })
-    if not data:
+    # Open-Meteo returns an object {daily: {...}}; reject list/None responses.
+    if not isinstance(data, dict):
         return None
     try:
         d = data["daily"]
@@ -577,8 +589,12 @@ class Backtester:
         """
         from datetime import timedelta
 
-        start  = datetime(*(int(x) for x in start_date.split("-")))
-        end    = datetime(*(int(x) for x in end_date.split("-")))
+        # Parse "YYYY-MM-DD" explicitly so positional args remain (year, month, day)
+        # and the type checker doesn't widen the splat to include tzinfo.
+        sy, sm, sd = (int(x) for x in start_date.split("-"))
+        ey, em, ed = (int(x) for x in end_date.split("-"))
+        start = datetime(sy, sm, sd)
+        end = datetime(ey, em, ed)
         test_w = timedelta(days=test_months * 30)
 
         # First test period starts after training period
@@ -704,3 +720,245 @@ class Backtester:
                 sum(r["confidence"] for r in results) / total, 3
             ),
         }
+
+
+# ── Backtrader Engine (optional alternative backend) ─────────────────────────
+
+if _HAS_BACKTRADER:
+
+    class CryptoOHLCVData(bt.feeds.PandasData):
+        """Backtrader data feed from CCXT OHLCV via pandas DataFrame."""
+        params = (
+            ("datetime", None),
+            ("open", "open"),
+            ("high", "high"),
+            ("low", "low"),
+            ("close", "close"),
+            ("volume", "volume"),
+            ("openinterest", -1),
+        )
+
+    class PolymarketCryptoStrategy(bt.Strategy):
+        """
+        Backtrader strategy that mirrors the bot's crypto signal pipeline:
+        RSI + SMA crossover + regime filter + Kelly sizing.
+        """
+        params = (
+            ("rsi_period", 14),
+            ("sma_short", 12),
+            ("sma_long", 26),
+            ("rsi_oversold", 30),
+            ("rsi_overbought", 70),
+            ("kelly_fraction", 0.15),
+            ("max_position_pct", 0.05),
+        )
+
+        def __init__(self):
+            self.rsi = bt.indicators.RSI(self.data.close, period=self.p.rsi_period)
+            self.sma_short = bt.indicators.SMA(self.data.close, period=self.p.sma_short)
+            self.sma_long = bt.indicators.SMA(self.data.close, period=self.p.sma_long)
+            self.macd = bt.indicators.MACD(self.data.close)
+            self.bbands = bt.indicators.BollingerBands(self.data.close, period=20)
+            self.atr = bt.indicators.ATR(self.data, period=14)
+            self.order = None
+            self.trade_count = 0
+
+        def next(self):
+            if self.order:
+                return
+
+            if not self.position:
+                # Entry conditions: RSI oversold + SMA bullish crossover
+                if (self.rsi[0] < self.p.rsi_oversold
+                        and self.sma_short[0] > self.sma_long[0]
+                        and self.macd.macd[0] > self.macd.signal[0]):
+                    size_pct = min(self.p.max_position_pct, self.p.kelly_fraction)
+                    size = self.broker.getvalue() * size_pct / self.data.close[0]
+                    if size >= 0.001:
+                        self.order = self.buy(size=size)
+                        self.trade_count += 1
+
+                # Short entry: RSI overbought + SMA bearish crossover
+                elif (self.rsi[0] > self.p.rsi_overbought
+                      and self.sma_short[0] < self.sma_long[0]
+                      and self.macd.macd[0] < self.macd.signal[0]):
+                    size_pct = min(self.p.max_position_pct, self.p.kelly_fraction)
+                    size = self.broker.getvalue() * size_pct / self.data.close[0]
+                    if size >= 0.001:
+                        self.order = self.sell(size=size)
+                        self.trade_count += 1
+            else:
+                # Exit on RSI mean reversion
+                if self.position.size > 0 and self.rsi[0] > 60:
+                    self.order = self.close()
+                elif self.position.size < 0 and self.rsi[0] < 40:
+                    self.order = self.close()
+
+        def notify_order(self, order):
+            if order.status in [order.Completed, order.Canceled, order.Margin, order.Rejected]:
+                self.order = None
+
+
+class BacktraderEngine:
+    """
+    Backtrader-based backtesting engine for crypto strategies.
+    Fetches OHLCV data via CCXT and runs the PolymarketCryptoStrategy.
+    """
+
+    def __init__(self, config: dict):
+        if not _HAS_BACKTRADER:
+            raise ImportError("backtrader is not installed. Run: pip install backtrader")
+        self.config = config
+
+    def run(
+        self,
+        asset: str = "bitcoin",
+        start_date: str = "2024-01-01",
+        end_date: str = "2024-12-31",
+        initial_bankroll: float = 500.0,
+        timeframe: str = "1h",
+    ) -> dict:
+        """
+        Run Backtrader backtest on crypto OHLCV data.
+        Fetches data via CCXT (Binance default), runs strategy with analyzers.
+        """
+        import pandas as pd
+        from .crypto_fetcher import SUPPORTED_ASSETS, SYMBOL_ALIASES, _HAS_CCXT
+
+        asset_key = SYMBOL_ALIASES.get(asset.lower(), asset.lower())
+        if asset_key not in SUPPORTED_ASSETS:
+            return {"error": f"Unsupported asset: {asset}"}
+
+        info = SUPPORTED_ASSETS[asset_key]
+
+        # Fetch historical OHLCV via CCXT
+        ohlcv_data = self._fetch_ohlcv(info, start_date, end_date, timeframe)
+        if ohlcv_data is None or len(ohlcv_data) < 50:
+            return {"error": "Insufficient OHLCV data for backtest"}
+
+        df = pd.DataFrame(ohlcv_data, columns=["timestamp", "open", "high", "low", "close", "volume"])
+        df["timestamp"] = pd.to_datetime(df["timestamp"], unit="ms")
+        df.set_index("timestamp", inplace=True)
+
+        # Set up Backtrader Cerebro
+        cerebro = bt.Cerebro()
+        cerebro.broker.setcash(initial_bankroll)
+        cerebro.broker.setcommission(commission=0.001)
+
+        # Add data feed
+        data_feed = bt.feeds.PandasData(dataname=df)
+        cerebro.adddata(data_feed)
+
+        # Add strategy with config-driven params
+        crypto_cfg = self.config.get("crypto", {})
+        cerebro.addstrategy(
+            PolymarketCryptoStrategy,
+            kelly_fraction=self.config.get("trading", {}).get("kelly_fraction", 0.15),
+            max_position_pct=crypto_cfg.get("max_position_usdc", 5) / initial_bankroll,
+        )
+
+        # Add analyzers
+        cerebro.addanalyzer(bt.analyzers.SharpeRatio, _name="sharpe", riskfreerate=0.05)
+        cerebro.addanalyzer(bt.analyzers.DrawDown, _name="drawdown")
+        cerebro.addanalyzer(bt.analyzers.TradeAnalyzer, _name="trades")
+        cerebro.addanalyzer(bt.analyzers.Returns, _name="returns")
+
+        # Run
+        log.info("Backtrader: running %s %s → %s on %s", asset_key, start_date, end_date, timeframe)
+        results = cerebro.run()
+        strat = results[0]
+
+        # Extract results
+        sharpe_analysis = strat.analyzers.sharpe.get_analysis()
+        dd_analysis = strat.analyzers.drawdown.get_analysis()
+        trade_analysis = strat.analyzers.trades.get_analysis()
+        returns_analysis = strat.analyzers.returns.get_analysis()
+
+        final_value = cerebro.broker.getvalue()
+        total_trades = trade_analysis.get("total", {}).get("total", 0)
+        won = trade_analysis.get("won", {}).get("total", 0)
+        lost = trade_analysis.get("lost", {}).get("total", 0)
+
+        return {
+            "engine": "backtrader",
+            "asset": asset_key,
+            "period": f"{start_date} → {end_date}",
+            "timeframe": timeframe,
+            "initial_bankroll": initial_bankroll,
+            "final_bankroll": round(final_value, 2),
+            "total_pnl_usdc": round(final_value - initial_bankroll, 2),
+            "roi_pct": round((final_value - initial_bankroll) / initial_bankroll * 100, 2),
+            "total_trades": total_trades,
+            "wins": won,
+            "losses": lost,
+            "win_rate": round(won / total_trades, 3) if total_trades > 0 else 0,
+            "sharpe_ratio": round(sharpe_analysis.get("sharperatio", 0) or 0, 3),
+            "max_drawdown_pct": round(dd_analysis.get("max", {}).get("drawdown", 0), 2),
+            "total_return_pct": round((returns_analysis.get("rtot", 0) or 0) * 100, 2),
+        }
+
+    def _fetch_ohlcv(
+        self, asset_info: dict, start_date: str, end_date: str, timeframe: str = "1h"
+    ) -> Optional[list]:
+        """Fetch OHLCV via CCXT, fallback to Binance direct API."""
+        from .crypto_fetcher import _HAS_CCXT, _init_ccxt_exchange
+
+        since_ms = int(datetime.strptime(start_date, "%Y-%m-%d").replace(tzinfo=timezone.utc).timestamp() * 1000)
+        end_ms = int(datetime.strptime(end_date, "%Y-%m-%d").replace(tzinfo=timezone.utc).timestamp() * 1000)
+
+        if _HAS_CCXT:
+            exchange_ids = self.config.get("crypto", {}).get("ccxt_exchanges", ["binance"])
+            for eid in exchange_ids:
+                ex = _init_ccxt_exchange(eid)
+                if not ex:
+                    continue
+                try:
+                    all_ohlcv = []
+                    cursor = since_ms
+                    while cursor < end_ms:
+                        batch = ex.fetch_ohlcv(
+                            asset_info.get("ccxt_symbol", f"{asset_info['symbol']}/USDT"),
+                            timeframe=timeframe,
+                            since=cursor,
+                            limit=1000,
+                        )
+                        if not batch:
+                            break
+                        all_ohlcv.extend(batch)
+                        cursor = batch[-1][0] + 1
+                        if len(batch) < 1000:
+                            break
+                    if all_ohlcv:
+                        log.info("Backtrader OHLCV: %d candles from %s", len(all_ohlcv), eid)
+                        return [c for c in all_ohlcv if c[0] <= end_ms]
+                except Exception as exc:
+                    log.debug("CCXT OHLCV fetch failed (%s): %s", eid, exc)
+
+        # Fallback: Binance direct API
+        try:
+            all_klines = []
+            cursor = since_ms
+            while cursor < end_ms:
+                url = "https://api.binance.com/api/v3/klines"
+                params = {
+                    "symbol": asset_info["binance"],
+                    "interval": timeframe,
+                    "startTime": cursor,
+                    "endTime": end_ms,
+                    "limit": 1000,
+                }
+                r = requests.get(url, params=params, timeout=30)
+                r.raise_for_status()
+                klines = r.json()
+                if not klines:
+                    break
+                for k in klines:
+                    all_klines.append([int(k[0]), float(k[1]), float(k[2]), float(k[3]), float(k[4]), float(k[5])])
+                cursor = int(klines[-1][0]) + 1
+                if len(klines) < 1000:
+                    break
+            log.info("Backtrader OHLCV: %d candles from Binance direct", len(all_klines))
+            return all_klines if all_klines else None
+        except Exception as exc:
+            log.warning("Binance OHLCV fetch failed: %s", exc)
+            return None
